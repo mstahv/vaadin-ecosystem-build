@@ -6,6 +6,8 @@
 
 A JBang script for testing Vaadin add-ons against different Vaadin framework versions.
 
+> ⚠️ **Security Warning:** This tool clones and builds external repositories, executing Maven plugins and code without verification. Run this only in an isolated environment such as a container, VM, or CI runner. Never run on a machine with sensitive data or credentials.
+
 ## Prerequisites
 
 - Java 21 or higher
@@ -37,6 +39,7 @@ jbang AddonTester.java
 | `-c`, `--clean` | Clean work directory before running | `false` |
 | `-a`, `--addons` | Comma-separated list of add-on names to test | all |
 | `-q`, `--quiet-downloads` | Silence Maven download progress messages | `false` |
+| `-t`, `--timeout` | Build timeout per add-on in minutes | `2` |
 | `-h`, `--help` | Show help message | |
 | `-V`, `--version` | Print version info | |
 

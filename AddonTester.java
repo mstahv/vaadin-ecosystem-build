@@ -12,6 +12,7 @@ import java.net.http.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.*;
 
 @Command(name = "addon-tester", mixinStandardHelpOptions = true, version = "1.0",
@@ -46,6 +47,9 @@ public class AddonTester implements Callable<Integer> {
 
     @Option(names = {"--quiet-downloads", "-q"}, description = "Silence Maven download progress messages")
     private boolean quietDownloads;
+
+    @Option(names = {"--timeout", "-t"}, description = "Build timeout per add-on in minutes", defaultValue = "2")
+    private int timeoutMinutes;
 
     private boolean useCustomSettings = false;
 
@@ -93,11 +97,13 @@ public class AddonTester implements Callable<Integer> {
             new AddonConfig("vaadin-fullcalendar", "https://github.com/stefanuebe/vaadin-fullcalendar"),
             new AddonConfig("vaadin-maps-leaflet-flow", "https://github.com/xdev-software/vaadin-maps-leaflet-flow"),
             new AddonConfig("vaadin-ckeditor", "https://github.com/wontlost-ltd/vaadin-ckeditor"),
-            new AddonConfig("svg-visualizations", "https://github.com/viritin/svg-visualizations")
+            new AddonConfig("svg-visualizations", "https://github.com/viritin/svg-visualizations"),
+            new AddonConfig("maplibre", "https://github.com/parttio/maplibre")
     );
 
     private final Map<String, BuildStatus> statusMap = new LinkedHashMap<>();
     private final Map<String, Long> durationMap = new HashMap<>();
+    private final Map<String, Long> buildStartTimeMap = new HashMap<>();
     private int lastOutputLines = 0;
 
     @Override
@@ -157,6 +163,7 @@ public class AddonTester implements Callable<Integer> {
             }
 
             statusMap.put(addon.name(), BuildStatus.BUILDING);
+            buildStartTimeMap.put(addon.name(), System.currentTimeMillis());
             clearOutput();
             printHeader();
             printStatusTable();
@@ -204,9 +211,16 @@ public class AddonTester implements Callable<Integer> {
             Long duration = durationMap.get(name);
             String durationStr = duration != null ? String.format(" (%.1fs)", duration / 1000.0) : "";
 
+            String buildingTime = "";
+            Long startTime = buildStartTimeMap.get(name);
+            if (status == BuildStatus.BUILDING && startTime != null) {
+                long elapsedSec = (System.currentTimeMillis() - startTime) / 1000;
+                buildingTime = String.format(" (%ds)", elapsedSec);
+            }
+
             String statusStr = switch (status) {
                 case PENDING -> DIM + "⏳ PENDING" + RESET;
-                case BUILDING -> YELLOW + "🔨 BUILDING..." + RESET;
+                case BUILDING -> YELLOW + "🔨 BUILDING..." + buildingTime + RESET;
                 case PASSED -> GREEN + "✅ PASSED" + RESET + durationStr;
                 case FAILED -> RED + "❌ FAILED" + RESET + durationStr;
                 case IGNORED -> DIM + "⏭️  IGNORED" + RESET;
@@ -241,14 +255,18 @@ public class AddonTester implements Callable<Integer> {
         Path logFile = workPath.resolve(addon.name() + "-build.log");
 
         try {
-            // Clone or update repository (silent)
+            // Clone or update repository
             if (!Files.exists(addonPath)) {
-                int cloneResult = runCommandSilent(workPath, logFile, "git", "clone", addon.repoUrl(), addon.name());
+                System.out.println("  " + DIM + "📥 Cloning " + addon.repoUrl() + "..." + RESET);
+                int cloneResult = runCommandSilent(workPath, logFile, "git", "clone", "--depth", "1", "--single-branch", addon.repoUrl(), addon.name());
                 if (cloneResult != 0) {
                     return new TestResult(addon.name(), false, "Failed to clone repository", elapsed(startTime), logFile);
                 }
             } else {
-                runCommandSilent(addonPath, logFile, "git", "fetch", "--all");
+                System.out.println("  " + DIM + "🔄 Updating repository..." + RESET);
+                // Discard any local changes (e.g., from versions plugin)
+                runCommandSilent(addonPath, logFile, "git", "checkout", "--", ".");
+                runCommandSilent(addonPath, logFile, "git", "fetch", "--depth", "1");
                 // Get the default branch from remote
                 String defaultBranch = addon.branch() != null ? addon.branch() : getDefaultBranch(addonPath, logFile);
                 runCommandSilent(addonPath, logFile, "git", "reset", "--hard", "origin/" + defaultBranch);
@@ -275,6 +293,7 @@ public class AddonTester implements Callable<Integer> {
             setPropertyArgs.add("-DnewVersion=" + vaadinVersion);
             setPropertyArgs.add("-DgenerateBackupPoms=false");
             setPropertyArgs.addAll(getCommonMvnArgs());
+            System.out.println("  " + DIM + "$ mvn " + String.join(" ", setPropertyArgs) + RESET);
             runMavenSilent(buildPath, logFile, addon.javaVersion(), setPropertyArgs);
 
             // Also try versions:set for direct vaadin-bom references
@@ -284,6 +303,7 @@ public class AddonTester implements Callable<Integer> {
             setVersionArgs.add("-DartifactId=vaadin-bom");
             setVersionArgs.add("-DgenerateBackupPoms=false");
             setVersionArgs.addAll(getCommonMvnArgs());
+            System.out.println("  " + DIM + "$ mvn " + String.join(" ", setVersionArgs) + RESET);
             runMavenSilent(buildPath, logFile, addon.javaVersion(), setVersionArgs);
 
             // Run the actual build
@@ -295,11 +315,14 @@ public class AddonTester implements Callable<Integer> {
                 mvnArgs.add("-Pvaadin-addons"); // Enable Vaadin Directory repository
             }
             mvnArgs.addAll(addon.extraMvnArgs());
+            System.out.println("  " + DIM + "$ mvn " + String.join(" ", mvnArgs) + RESET);
 
             int buildResult = runMavenWithTail(buildPath, logFile, addon.javaVersion(), mvnArgs);
 
             if (buildResult == 0) {
                 return new TestResult(addon.name(), true, "Build successful", elapsed(startTime), logFile);
+            } else if (buildResult == -1) {
+                return new TestResult(addon.name(), false, "Build timed out after " + timeoutMinutes + " min", elapsed(startTime), logFile);
             } else {
                 return new TestResult(addon.name(), false, "Build failed (exit code: " + buildResult + ")", elapsed(startTime), logFile);
             }
@@ -444,7 +467,13 @@ public class AddonTester implements Callable<Integer> {
         clearTailLines(displayedLines);
         lastOutputLines = countOutputLines();
 
-        return process.waitFor();
+        boolean completed = process.waitFor(timeoutMinutes, TimeUnit.MINUTES);
+        if (!completed) {
+            process.destroyForcibly();
+            System.out.println(RED + "⏱️  Build timed out after " + timeoutMinutes + " minutes" + RESET);
+            return -1; // Timeout exit code
+        }
+        return process.exitValue();
     }
 
     private long elapsed(long startTime) {
