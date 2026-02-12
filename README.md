@@ -108,12 +108,18 @@ This allows testing add-ons against unreleased Vaadin versions:
 
 ## GitHub Actions
 
-The repository includes a GitHub Actions workflow that can be triggered manually:
+The repository includes a GitHub Actions workflow with:
 
+### Scheduled Runs
+- Runs daily at 6:00 UTC against Vaadin `25.0-SNAPSHOT`
+- Creates a GitHub issue with `build-failure` label if the build fails
+- Watch the repository to get notified of new issues
+
+### Manual Runs
 1. Go to **Actions** tab in GitHub
 2. Select **Test Add-ons** workflow
 3. Click **Run workflow**
-4. Optionally specify a Vaadin version (defaults to 25.0.5)
+4. Optionally specify a Vaadin version (defaults to latest stable)
 5. Build logs are uploaded as artifacts for inspection
 
 ## How It Works
