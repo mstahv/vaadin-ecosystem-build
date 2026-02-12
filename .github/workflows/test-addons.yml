@@ -1,0 +1,44 @@
+name: Test Add-ons
+
+on:
+  workflow_dispatch:
+    inputs:
+      vaadin_version:
+        description: 'Vaadin version to test against'
+        required: false
+        default: '25.0.5'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up JBang
+        uses: jbangdev/setup-jbang@main
+
+      - name: Set up SDKMAN
+        run: |
+          curl -s "https://get.sdkman.io" | bash
+          echo "SDKMAN_DIR=$HOME/.sdkman" >> $GITHUB_ENV
+
+      - name: Run Add-on Tests
+        run: |
+          source "$HOME/.sdkman/bin/sdkman-init.sh"
+          jbang AddonTester.java -v ${{ github.event.inputs.vaadin_version || '25.0.5' }}
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: work/*.log
+          retention-days: 7

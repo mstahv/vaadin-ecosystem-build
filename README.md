@@ -80,6 +80,16 @@ private static final List<AddonConfig> ADDONS = List.of(
 - `ignored` - Skip this add-on if true
 - `ignoreReason` - Reason for ignoring (shown in output)
 
+## GitHub Actions
+
+The repository includes a GitHub Actions workflow that can be triggered manually:
+
+1. Go to **Actions** tab in GitHub
+2. Select **Test Add-ons** workflow
+3. Click **Run workflow**
+4. Optionally specify a Vaadin version (defaults to 25.0.5)
+5. Build logs are uploaded as artifacts for inspection
+
 ## How It Works
 
 1. Clones (or updates) each configured add-on repository into the work directory
