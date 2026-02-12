@@ -2,11 +2,7 @@
 
 [![Nightly Build](https://github.com/mstahv/addon-tester/actions/workflows/test-addons.yml/badge.svg?event=schedule)](https://github.com/mstahv/addon-tester/actions/workflows/test-addons.yml)
 
-## Latest Nightly Results
-
-<!-- RESULTS-START -->
-_No results yet. Results will be updated after the first scheduled run._
-<!-- RESULTS-END -->
+📊 **[View Latest Test Results](https://github.com/mstahv/addon-tester/actions/workflows/test-addons.yml)** - Download `build-logs` artifact for full report (`results.md`)
 
 A JBang script for testing Vaadin add-ons against different Vaadin framework versions.
 
