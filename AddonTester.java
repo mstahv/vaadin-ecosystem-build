@@ -15,6 +15,11 @@ import java.util.concurrent.Callable;
         description = "Tests Vaadin add-ons against framework version changes")
 public class AddonTester implements Callable<Integer> {
 
+    // ANSI color codes
+    private static final String RED = "\u001B[31m";
+    private static final String GREEN = "\u001B[32m";
+    private static final String RESET = "\u001B[0m";
+
     @Option(names = {"--vaadin.version", "-v"}, description = "Vaadin version to test against", defaultValue = "25.0.5")
     private String vaadinVersion;
 
@@ -123,9 +128,10 @@ public class AddonTester implements Callable<Integer> {
             }
 
             // Build with specified Vaadin version
-            System.out.println("Running mvn verify with Vaadin " + vaadinVersion + "...");
+            System.out.println("Running mvn clean verify with Vaadin " + vaadinVersion + "...");
             List<String> mvnCommand = new ArrayList<>();
             mvnCommand.add("mvn");
+            mvnCommand.add("clean");
             mvnCommand.add("verify");
             mvnCommand.add("-Dvaadin.version=" + vaadinVersion);
             mvnCommand.add("-B"); // Batch mode for cleaner output
@@ -182,17 +188,17 @@ public class AddonTester implements Callable<Integer> {
                 status = "IGNORED";
                 ignored++;
             } else if (result.success()) {
-                status = "PASSED";
+                status = GREEN + "PASSED" + RESET;
                 passed++;
             } else {
-                status = "FAILED";
+                status = RED + "FAILED" + RESET;
                 failed++;
             }
 
             String duration = result.durationMs() > 0 ? String.format(" (%.1fs)", result.durationMs() / 1000.0) : "";
             System.out.printf("  %-30s %s%s%n", result.addonName(), status, duration);
             if (!result.success() && !result.message().startsWith("Ignored:")) {
-                System.out.printf("    -> %s%n", result.message());
+                System.out.printf("    -> %s%s%s%n", RED, result.message(), RESET);
             }
         }
 
