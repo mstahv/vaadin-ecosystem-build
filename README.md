@@ -70,9 +70,11 @@ private static final List<AddonConfig> ADDONS = List.of(
     new AddonConfig("multi-module", "https://github.com/org/repo", "submodule"),
     // With subdirectory and specific Java version (via SDKMAN)
     new AddonConfig("legacy-addon", "https://github.com/org/repo", "subdir", "17-tem"),
+    // With Vaadin Directory repository (for add-ons depending on other add-ons)
+    new AddonConfig("addon-with-deps", "https://github.com/org/repo", null, null, null, true, List.of(), false, null),
     // Full configuration
     new AddonConfig("full-config", "https://github.com/org/repo",
-                    "branch-name", "subdir", "21-tem", List.of("-DskipTests"), false, null)
+                    "branch-name", "subdir", "21-tem", false, List.of("-DskipTests"), false, null)
 );
 ```
 
@@ -83,6 +85,7 @@ private static final List<AddonConfig> ADDONS = List.of(
 - `branch` - Branch to checkout (optional, defaults to main)
 - `buildSubdir` - Subdirectory to run Maven in (optional, for multi-module projects)
 - `javaVersion` - SDKMAN Java version identifier (optional, e.g., `"21-tem"` for Temurin 21, auto-installs if missing)
+- `useAddonsRepo` - Indicates add-on depends on other add-ons from Vaadin Directory (optional, for documentation)
 - `extraMvnArgs` - Additional Maven arguments (optional)
 - `ignored` - Skip this add-on if true
 - `ignoreReason` - Reason for ignoring (shown in output)

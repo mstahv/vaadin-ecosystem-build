@@ -56,20 +56,21 @@ public class AddonTester implements Callable<Integer> {
             String branch,
             String buildSubdir,
             String javaVersion,  // SDKMAN Java version identifier (e.g., "21.0.5-tem")
+            boolean useAddonsRepo,  // Enable Vaadin Directory repository for add-on dependencies
             List<String> extraMvnArgs,
             boolean ignored,
             String ignoreReason
     ) {
         AddonConfig(String name, String repoUrl) {
-            this(name, repoUrl, null, null, null, List.of(), false, null);
+            this(name, repoUrl, null, null, null, false, List.of(), false, null);
         }
 
         AddonConfig(String name, String repoUrl, String buildSubdir) {
-            this(name, repoUrl, null, buildSubdir, null, List.of(), false, null);
+            this(name, repoUrl, null, buildSubdir, null, false, List.of(), false, null);
         }
 
         AddonConfig(String name, String repoUrl, String buildSubdir, String javaVersion) {
-            this(name, repoUrl, null, buildSubdir, javaVersion, List.of(), false, null);
+            this(name, repoUrl, null, buildSubdir, javaVersion, false, List.of(), false, null);
         }
     }
 
