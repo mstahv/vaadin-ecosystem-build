@@ -153,14 +153,16 @@ jobs:
                 continue;
               }
 
-              const body = `The **${project}** build is failing against Vaadin ${version}.
-
-**Project:** ${project}
-**Vaadin Version:** ${version}
-**Build Type:** ${buildType}
-**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
-
-Please check the build logs for details.`;
+              const body = [
+                `The **${project}** build is failing against Vaadin ${version}.`,
+                '',
+                `**Project:** ${project}`,
+                `**Vaadin Version:** ${version}`,
+                `**Build Type:** ${buildType}`,
+                `**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                '',
+                'Please check the build logs for details.'
+              ].join('\n');
 
               await github.rest.issues.create({
                 owner: context.repo.owner,
