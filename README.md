@@ -2,7 +2,7 @@
 
 [![Ecosystem Build](https://github.com/mstahv/vaadin-ecosystem-build/actions/workflows/ecosystem-build.yml/badge.svg?event=schedule)](https://github.com/mstahv/vaadin-ecosystem-build/actions/workflows/ecosystem-build.yml)
 
-**[View Latest Test Results](https://github.com/mstahv/vaadin-ecosystem-build/actions/workflows/ecosystem-build.yml)** - Download `build-logs` artifact for full report (`results.md`)
+**[View Build Status Dashboard](https://ecosystembuild.parttio.org)** - Live results for all tested Vaadin versions
 
 This project continuously validates that popular Vaadin add-ons and example applications build successfully against the latest Vaadin framework versions, including snapshots. It helps detect compatibility issues early, before they affect end users.
 
