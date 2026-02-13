@@ -451,6 +451,9 @@ public class EcosystemBuild implements Callable<Integer> {
         long totalTimeMs = System.currentTimeMillis() - buildStartTime;
         printFinalSummary(results, totalTimeMs);
 
+        // Write list of failed projects for CI integration
+        writeFailedProjectsList(workPath);
+
         // Count failures (known issues don't count as failures)
         boolean allPassed = statusMap.values().stream()
                 .noneMatch(s -> s == BuildStatus.FAILED);
@@ -1129,6 +1132,25 @@ public class EcosystemBuild implements Callable<Integer> {
                 ? String.format("%.1fs", result.durationMs() / 1000.0)
                 : "-";
         writer.write("| " + result.projectName() + " | " + statusEmoji + " | " + duration + " |\n");
+    }
+
+    private void writeFailedProjectsList(Path workPath) {
+        Path failedFile = workPath.resolve("failed-projects.txt");
+        try (BufferedWriter writer = Files.newBufferedWriter(failedFile)) {
+            // Write Vaadin version as first line for CI to use
+            writer.write("vaadin_version=" + vaadinVersion);
+            writer.newLine();
+
+            // Write each failed project (not known issues, not ignored)
+            for (var entry : statusMap.entrySet()) {
+                if (entry.getValue() == BuildStatus.FAILED) {
+                    writer.write(entry.getKey());
+                    writer.newLine();
+                }
+            }
+        } catch (IOException e) {
+            System.err.println("⚠️  Warning: Could not write failed projects list: " + e.getMessage());
+        }
     }
 
     public static void main(String... args) {
