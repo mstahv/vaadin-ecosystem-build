@@ -129,6 +129,15 @@ jobs:
               return;
             }
 
+            // Read failure metadata (original version info)
+            let failureMetadata = {};
+            try {
+              const metadataContent = fs.readFileSync(`work/${version}/failure-metadata.json`, 'utf8');
+              failureMetadata = JSON.parse(metadataContent);
+            } catch (e) {
+              console.log('Could not read failure-metadata.json:', e.message);
+            }
+
             // Get existing open issues
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
@@ -151,16 +160,47 @@ jobs:
                 continue;
               }
 
-              const body = [
-                `The **${project}** build is failing against Vaadin ${version}.`,
+              // Build issue body with metadata
+              const metadata = failureMetadata[project];
+              const projectUrl = metadata?.repoUrl || null;
+              const projectLink = projectUrl ? `[${project}](${projectUrl})` : project;
+              const bodyParts = [
+                `The **${projectLink}** build is failing against Vaadin ${version}.`,
                 '',
-                `**Project:** ${project}`,
+                `**Project:** ${projectLink}`,
                 `**Vaadin Version:** ${version}`,
                 `**Build Type:** ${buildType}`,
                 `**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-                '',
-                'Please check the build logs for details.'
-              ].join('\n');
+              ];
+
+              if (metadata) {
+                bodyParts.push('');
+                bodyParts.push('### Verification with Original Version');
+                if (metadata.originalVersion) {
+                  bodyParts.push(`**Project's configured Vaadin version:** ${metadata.originalVersion}`);
+                  if (metadata.buildsWithOriginal) {
+                    bodyParts.push('**Builds with original version:** ✅ Yes');
+                    bodyParts.push('');
+                    bodyParts.push('> This suggests the failure is caused by changes in Vaadin ' + version);
+                    bodyParts.push('');
+                    bodyParts.push('**Likely sources of the breaking change:**');
+                    bodyParts.push('- [vaadin/flow](https://github.com/vaadin/flow/) - Flow framework');
+                    bodyParts.push('- [vaadin/flow-components](https://github.com/vaadin/flow-components/) - Flow component Java APIs');
+                    bodyParts.push('- [vaadin/web-components](https://github.com/vaadin/web-components/) - Web Components');
+                  } else {
+                    bodyParts.push('**Builds with original version:** ❌ No');
+                    bodyParts.push('');
+                    bodyParts.push('> The project also fails with its original version - this may be an old or new issue in the project itself');
+                  }
+                } else {
+                  bodyParts.push('Could not detect the project\'s original Vaadin version.');
+                }
+              }
+
+              bodyParts.push('');
+              bodyParts.push('Please check the build logs for details.');
+
+              const body = bodyParts.join('\n');
 
               await github.rest.issues.create({
                 owner: context.repo.owner,

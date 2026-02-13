@@ -154,11 +154,15 @@ public class EcosystemBuild implements Callable<Integer> {
     // Build status for display
     enum BuildStatus { PENDING, WAITING, BUILDING, PASSED, FAILED, KNOWN_ISSUE, IGNORED }
 
+    // Metadata about a failed build - used to provide context in GitHub issues
+    record FailureMetadata(String repoUrl, String originalVersion, boolean buildsWithOriginal) {}
+
     private final Map<String, BuildStatus> statusMap = new LinkedHashMap<>();
     private final Map<String, ProjectType> projectTypes = new HashMap<>();
     private final Map<String, Long> durationMap = new HashMap<>();
     private final Map<String, Long> buildStartTimeMap = new HashMap<>();
     private final Map<String, String> knownIssueUrls = new HashMap<>();  // Project -> GitHub issue URL
+    private final Map<String, FailureMetadata> failureMetadata = new HashMap<>();  // Project -> failure context
     private int lastOutputLines = 0;
 
     @Override
@@ -297,6 +301,24 @@ public class EcosystemBuild implements Callable<Integer> {
                     } else {
                         finalStatus = BuildStatus.FAILED;
                     }
+
+                    // For failures, verify if project builds with its original Vaadin version
+                    Path projectPath = workPath.resolve(task.name);
+                    Path buildPath = task.buildSubdir != null ? projectPath.resolve(task.buildSubdir) : projectPath;
+                    System.out.println();
+                    System.out.printf("  %s🔍 Verifying build with project's original Vaadin version...%s%n", DIM, RESET);
+
+                    String originalVersion = detectProjectVaadinVersion(buildPath, task.javaVersion);
+                    Path verifyLog = versionOutputPath.resolve(task.name + "-original-build.log");
+                    boolean buildsWithOriginal = verifyWithOriginalVersion(buildPath, task.javaVersion,
+                            task.useAddonsRepo, task.extraMvnArgs, verifyLog);
+
+                    failureMetadata.put(task.name, new FailureMetadata(task.repoUrl, originalVersion, buildsWithOriginal));
+
+                    if (originalVersion != null) {
+                        System.out.printf("  %s   Original version: %s, builds: %s%s%n", DIM, originalVersion,
+                                buildsWithOriginal ? "✅" : "❌", RESET);
+                    }
                 }
                 statusMap.put(task.name, finalStatus);
 
@@ -363,6 +385,18 @@ public class EcosystemBuild implements Callable<Integer> {
                     TestResult result = testProject(task.name, task.repoUrl, task.branch, task.buildSubdir,
                             task.javaVersion, task.useAddonsRepo, task.extraMvnArgs, task.type, finalWorkPath, true);
 
+                    // For failures, verify if project builds with its original Vaadin version
+                    FailureMetadata metadata = null;
+                    if (!result.success()) {
+                        Path projectPath = finalWorkPath.resolve(task.name);
+                        Path buildPath = task.buildSubdir != null ? projectPath.resolve(task.buildSubdir) : projectPath;
+                        String originalVersion = detectProjectVaadinVersion(buildPath, task.javaVersion);
+                        Path verifyLog = versionOutputPath.resolve(task.name + "-original-build.log");
+                        boolean buildsWithOriginal = verifyWithOriginalVersion(buildPath, task.javaVersion,
+                                task.useAddonsRepo, task.extraMvnArgs, verifyLog);
+                        metadata = new FailureMetadata(task.repoUrl, originalVersion, buildsWithOriginal);
+                    }
+
                     synchronized (slotsLock) {
                         durationMap.put(task.name, result.durationMs());
                         BuildStatus finalStatus;
@@ -375,6 +409,9 @@ public class EcosystemBuild implements Callable<Integer> {
                                 knownIssueUrls.put(task.name, issueUrl);
                             } else {
                                 finalStatus = BuildStatus.FAILED;
+                            }
+                            if (metadata != null) {
+                                failureMetadata.put(task.name, metadata);
                             }
                         }
                         statusMap.put(task.name, finalStatus);
@@ -797,6 +834,67 @@ public class EcosystemBuild implements Callable<Integer> {
     }
 
     /**
+     * Detect the project's configured Vaadin version from pom.xml.
+     * Uses Maven help:evaluate to get the vaadin.version property.
+     * @return The version string, or null if not found
+     */
+    private String detectProjectVaadinVersion(Path buildPath, String javaVersion) {
+        try {
+            // Use help:evaluate to get the vaadin.version property
+            List<String> args = List.of(
+                    "help:evaluate",
+                    "-Dexpression=vaadin.version",
+                    "-q",
+                    "-DforceStdout"
+            );
+
+            Path tempLog = Files.createTempFile("vaadin-version", ".log");
+            int result = runMavenSilent(buildPath, tempLog, javaVersion, new ArrayList<>(args));
+
+            if (result == 0) {
+                String output = Files.readString(tempLog).trim();
+                // Filter out Maven noise - version should match pattern like 24.6.0 or 25.0-SNAPSHOT
+                if (output.matches("\\d+\\.\\d+.*")) {
+                    Files.deleteIfExists(tempLog);
+                    return output;
+                }
+            }
+            Files.deleteIfExists(tempLog);
+        } catch (Exception e) {
+            // Ignore - version detection is optional
+        }
+        return null;
+    }
+
+    /**
+     * Run a verification build with the project's original Vaadin version.
+     * Used to determine if a failure is specific to the new version or a pre-existing issue.
+     * @return true if build succeeds, false otherwise
+     */
+    private boolean verifyWithOriginalVersion(Path buildPath, String javaVersion, boolean useAddonsRepo,
+                                               List<String> extraMvnArgs, Path logFile) {
+        try {
+            // Reset pom.xml to original state
+            runCommandSilent(buildPath, logFile, "git", "checkout", "--", "pom.xml");
+
+            // Run build without version modification
+            List<String> mvnArgs = new ArrayList<>();
+            mvnArgs.add("clean");
+            mvnArgs.add("verify");
+            mvnArgs.addAll(getCommonMvnArgs());
+            if (useAddonsRepo) {
+                mvnArgs.add("-Pvaadin-addons");
+            }
+            mvnArgs.addAll(extraMvnArgs);
+
+            int buildResult = runMavenSilent(buildPath, logFile, javaVersion, mvnArgs);
+            return buildResult == 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
      * Check if there's an open GitHub issue for this project and version.
      * Uses GitHub REST API (no authentication needed for public repos).
      * @return The issue URL if found, null otherwise
@@ -1187,6 +1285,29 @@ public class EcosystemBuild implements Callable<Integer> {
             }
         } catch (IOException e) {
             System.err.println("⚠️  Warning: Could not write failed projects list: " + e.getMessage());
+        }
+
+        // Write failure metadata as JSON for CI to use in issue creation
+        if (!failureMetadata.isEmpty()) {
+            Path metadataFile = versionOutputPath.resolve("failure-metadata.json");
+            try (BufferedWriter writer = Files.newBufferedWriter(metadataFile)) {
+                writer.write("{\n");
+                var entries = new ArrayList<>(failureMetadata.entrySet());
+                for (int i = 0; i < entries.size(); i++) {
+                    var entry = entries.get(i);
+                    String repoUrl = entry.getValue().repoUrl();
+                    String originalVersion = entry.getValue().originalVersion();
+                    boolean builds = entry.getValue().buildsWithOriginal();
+                    writer.write("  \"" + entry.getKey() + "\": {\n");
+                    writer.write("    \"repoUrl\": " + (repoUrl != null ? "\"" + repoUrl + "\"" : "null") + ",\n");
+                    writer.write("    \"originalVersion\": " + (originalVersion != null ? "\"" + originalVersion + "\"" : "null") + ",\n");
+                    writer.write("    \"buildsWithOriginal\": " + builds + "\n");
+                    writer.write("  }" + (i < entries.size() - 1 ? "," : "") + "\n");
+                }
+                writer.write("}\n");
+            } catch (IOException e) {
+                System.err.println("⚠️  Warning: Could not write failure metadata: " + e.getMessage());
+            }
         }
     }
 
