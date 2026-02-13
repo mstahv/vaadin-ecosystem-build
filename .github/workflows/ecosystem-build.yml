@@ -98,7 +98,7 @@ jobs:
           retention-days: 7
 
       - name: Create issue on failure
-        if: steps.test.outputs.exit_code != '0' && github.event_name == 'schedule'
+        if: steps.test.outputs.exit_code != '0'
         uses: actions/github-script@v7
         env:
           ACTUAL_VERSION: ${{ steps.test.outputs.actual_version }}
@@ -107,10 +107,16 @@ jobs:
           script: |
             const version = process.env.ACTUAL_VERSION || 'unknown';
             const buildType = process.env.BUILD_TYPE;
-            const scheduleType = buildType === 'snapshot' ? 'hourly snapshot' : 'daily release';
+
+            let buildDescription;
+            switch (buildType) {
+              case 'snapshot': buildDescription = 'hourly snapshot'; break;
+              case 'release': buildDescription = 'daily release'; break;
+              default: buildDescription = 'manual'; break;
+            }
 
             const title = `Build failed: Vaadin ${version}`;
-            const body = `The ${scheduleType} ecosystem build failed.
+            const body = `The ${buildDescription} ecosystem build failed.
 
             **Vaadin Version:** ${version}
             **Build Type:** ${buildType}
