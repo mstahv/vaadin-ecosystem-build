@@ -38,6 +38,7 @@ jbang AddonTester.java
 | `-w`, `--work-dir` | Working directory for cloning projects | `work` |
 | `-c`, `--clean` | Clean work directory before running | `false` |
 | `-p`, `--projects` | Comma-separated list of project names to test | all |
+| `-j`, `--buildThreads` | Number of concurrent builds | `1` |
 | `-q`, `--quiet-downloads` | Silence Maven download progress messages | `false` |
 | `-t`, `--timeout` | Build timeout per project in minutes | `2` |
 | `-h`, `--help` | Show help message | |
@@ -63,6 +64,11 @@ Clean the work directory and run fresh:
 Test only specific projects:
 ```bash
 ./AddonTester.java -p hugerte-for-flow,super-fields
+```
+
+Run builds in parallel (4 concurrent jobs):
+```bash
+./AddonTester.java -j 4
 ```
 
 ## Adding Projects

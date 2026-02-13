@@ -11,8 +11,8 @@ import java.net.URI;
 import java.net.http.*;
 import java.nio.file.*;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.*;
 
 @Command(name = "ecosystem-build", mixinStandardHelpOptions = true, version = "1.0",
@@ -51,10 +51,13 @@ public class AddonTester implements Callable<Integer> {
     @Option(names = {"--timeout", "-t"}, description = "Build timeout per project in minutes", defaultValue = "2")
     private int timeoutMinutes;
 
+    @Option(names = {"--buildThreads", "-j"}, description = "Number of concurrent builds (default: 1)", defaultValue = "1")
+    private int buildThreads;
+
     private boolean useCustomSettings = false;
 
     // Project types
-    enum ProjectType { ADDON, APP }
+    enum ProjectType { SMOKE_TEST, ADDON, APP }
 
     // Project configuration base class
     static class AddonProject {
@@ -90,7 +93,7 @@ public class AddonTester implements Callable<Integer> {
     }
 
     // Build status for display
-    enum BuildStatus { PENDING, BUILDING, PASSED, FAILED, IGNORED }
+    enum BuildStatus { PENDING, WAITING, BUILDING, PASSED, FAILED, IGNORED }
 
     // Configure add-ons to test here
     private static final List<AddonProject> ADDONS = List.of(
@@ -175,6 +178,25 @@ public class AddonTester implements Callable<Integer> {
 
         Files.createDirectories(workPath);
 
+        // Run smoke test first to validate Vaadin version and cache artifacts
+        System.out.println("🔥 Running smoke test to validate Vaadin " + vaadinVersion + "...");
+        System.out.println();
+        TestResult smokeTestResult = runSmokeTest(workPath);
+        if (!smokeTestResult.success()) {
+            System.out.println();
+            System.out.printf("%s💥 Smoke test failed! Vaadin %s may not be available or compatible.%s%n",
+                    RED, vaadinVersion, RESET);
+            System.out.println("   Check " + smokeTestResult.logFile() + " for details.");
+            // Still write report with failed smoke test
+            long totalTimeMs = System.currentTimeMillis() - System.currentTimeMillis(); // ~0
+            printFinalSummary(List.of(smokeTestResult), smokeTestResult.durationMs());
+            return 1;
+        }
+        System.out.println();
+        System.out.printf("%s✅ Smoke test passed - Vaadin %s artifacts cached (%.1fs)%s%n",
+                GREEN, vaadinVersion, smokeTestResult.durationMs() / 1000.0, RESET);
+        System.out.println();
+
         // Build list of all projects to test
         List<AddonProject> addonsToTest = ADDONS;
         List<AppProject> appsToTest = APPS;
@@ -207,79 +229,202 @@ public class AddonTester implements Callable<Integer> {
             projectTypes.put(app.name, ProjectType.APP);
         }
 
-        List<TestResult> results = new ArrayList<>();
+        List<TestResult> results = Collections.synchronizedList(new ArrayList<>());
+        results.add(smokeTestResult);  // Include smoke test in report
+        long buildStartTime = System.currentTimeMillis();
 
         // Print initial header
         printHeader();
         printStatusTable();
         System.out.println();
 
-        // Test add-ons
+        // Collect all projects to build
+        record BuildTask(String name, String repoUrl, String branch, String buildSubdir,
+                         String javaVersion, boolean useAddonsRepo, List<String> extraMvnArgs,
+                         ProjectType type, boolean ignored, String ignoreReason) {}
+
+        List<BuildTask> allTasks = new ArrayList<>();
         for (AddonProject addon : addonsToTest) {
-            if (addon.ignored) {
-                results.add(new TestResult(addon.name, ProjectType.ADDON, false, "Ignored: " + addon.ignoreReason, 0));
-                continue;
-            }
-
-            statusMap.put(addon.name, BuildStatus.BUILDING);
-            buildStartTimeMap.put(addon.name, System.currentTimeMillis());
-            clearOutput();
-            printHeader();
-            printStatusTable();
-            System.out.println();
-
-            TestResult result = testProject(addon.name, addon.repoUrl, addon.branch, addon.buildSubdir,
-                    addon.javaVersion, addon.useAddonsRepo, addon.extraMvnArgs, ProjectType.ADDON, workPath);
-            results.add(result);
-
-            durationMap.put(addon.name, result.durationMs());
-            statusMap.put(addon.name, result.success() ? BuildStatus.PASSED : BuildStatus.FAILED);
-
-            clearOutput();
-            printHeader();
-            printStatusTable();
-
-            if (!result.success()) {
-                System.out.println();
-                System.out.printf("  %s💥 %s failed. Log: %s%s%n", RED, addon.name, result.logFile(), RESET);
-            }
-            System.out.println();
+            allTasks.add(new BuildTask(addon.name, addon.repoUrl, addon.branch, addon.buildSubdir,
+                    addon.javaVersion, addon.useAddonsRepo, addon.extraMvnArgs,
+                    ProjectType.ADDON, addon.ignored, addon.ignoreReason));
+        }
+        for (AppProject app : appsToTest) {
+            allTasks.add(new BuildTask(app.name, app.repoUrl, app.branch, app.buildSubdir,
+                    app.javaVersion, app.useAddonsRepo, app.extraMvnArgs,
+                    ProjectType.APP, app.ignored, app.ignoreReason));
         }
 
-        // Test apps
-        for (AppProject app : appsToTest) {
-            if (app.ignored) {
-                results.add(new TestResult(app.name, ProjectType.APP, false, "Ignored: " + app.ignoreReason, 0));
-                continue;
+        if (buildThreads == 1) {
+            // Sequential execution with live output
+            for (BuildTask task : allTasks) {
+                if (task.ignored) {
+                    results.add(new TestResult(task.name, task.type, false, "Ignored: " + task.ignoreReason, 0));
+                    continue;
+                }
+
+                statusMap.put(task.name, BuildStatus.BUILDING);
+                buildStartTimeMap.put(task.name, System.currentTimeMillis());
+                clearOutput();
+                printHeader();
+                printStatusTable();
+                System.out.println();
+
+                TestResult result = testProject(task.name, task.repoUrl, task.branch, task.buildSubdir,
+                        task.javaVersion, task.useAddonsRepo, task.extraMvnArgs, task.type, workPath);
+                results.add(result);
+
+                durationMap.put(task.name, result.durationMs());
+                statusMap.put(task.name, result.success() ? BuildStatus.PASSED : BuildStatus.FAILED);
+
+                clearOutput();
+                printHeader();
+                printStatusTable();
+
+                if (!result.success()) {
+                    System.out.println();
+                    System.out.printf("  %s💥 %s failed. Log: %s%s%n", RED, task.name, result.logFile(), RESET);
+                }
+                System.out.println();
+            }
+        } else {
+            // Concurrent execution with fixed builder slots
+            ExecutorService executor = Executors.newFixedThreadPool(buildThreads);
+            List<Future<TestResult>> futures = new ArrayList<>();
+
+            // Fixed slots for each builder thread - index is slot number
+            record BuilderSlot(String projectName, Path logFile) {}
+            BuilderSlot[] builderSlots = new BuilderSlot[buildThreads];
+            Object slotsLock = new Object();
+
+            // Track available slot numbers
+            Queue<Integer> availableSlots = new ConcurrentLinkedQueue<>();
+            for (int i = 0; i < buildThreads; i++) {
+                availableSlots.add(i);
             }
 
-            statusMap.put(app.name, BuildStatus.BUILDING);
-            buildStartTimeMap.put(app.name, System.currentTimeMillis());
-            clearOutput();
-            printHeader();
-            printStatusTable();
-            System.out.println();
+            // Handle ignored tasks first
+            for (BuildTask task : allTasks) {
+                if (task.ignored) {
+                    results.add(new TestResult(task.name, task.type, false, "Ignored: " + task.ignoreReason, 0));
+                }
+            }
 
-            TestResult result = testProject(app.name, app.repoUrl, app.branch, app.buildSubdir,
-                    app.javaVersion, app.useAddonsRepo, app.extraMvnArgs, ProjectType.APP, workPath);
-            results.add(result);
+            // Mark non-ignored tasks as WAITING
+            for (BuildTask task : allTasks) {
+                if (!task.ignored) {
+                    statusMap.put(task.name, BuildStatus.WAITING);
+                }
+            }
 
-            durationMap.put(app.name, result.durationMs());
-            statusMap.put(app.name, result.success() ? BuildStatus.PASSED : BuildStatus.FAILED);
+            // Submit build tasks
+            final Path finalWorkPath = workPath;
+            for (BuildTask task : allTasks) {
+                if (task.ignored) continue;
 
-            clearOutput();
-            printHeader();
-            printStatusTable();
+                futures.add(executor.submit(() -> {
+                    // Acquire a slot for this builder
+                    Integer slot = availableSlots.poll();
+                    if (slot == null) slot = 0; // Fallback
 
-            if (!result.success()) {
+                    // Mark as building when actually starting
+                    synchronized (slotsLock) {
+                        statusMap.put(task.name, BuildStatus.BUILDING);
+                        buildStartTimeMap.put(task.name, System.currentTimeMillis());
+                        builderSlots[slot] = new BuilderSlot(task.name, finalWorkPath.resolve(task.name + "-build.log"));
+                    }
+
+                    TestResult result = testProject(task.name, task.repoUrl, task.branch, task.buildSubdir,
+                            task.javaVersion, task.useAddonsRepo, task.extraMvnArgs, task.type, finalWorkPath, true);
+
+                    synchronized (slotsLock) {
+                        durationMap.put(task.name, result.durationMs());
+                        statusMap.put(task.name, result.success() ? BuildStatus.PASSED : BuildStatus.FAILED);
+                        builderSlots[slot] = null;
+                    }
+
+                    // Release the slot
+                    availableSlots.add(slot);
+
+                    return result;
+                }));
+            }
+
+            // Calculate lines per builder based on terminal size if available
+            int terminalHeight = getTerminalHeight();
+            int headerAndStatusLines = countOutputLines() + 2; // +2 for empty line and separator
+            int availableLines = terminalHeight > 0
+                    ? Math.max(buildThreads * 4, terminalHeight - headerAndStatusLines - 2)
+                    : TAIL_LINES;
+            int linesPerBuilder = Math.max(3, availableLines / buildThreads);
+
+            // Update status display while waiting
+            while (!futures.stream().allMatch(Future::isDone)) {
+                clearOutput();
+                printHeader();
+                printStatusTable();
                 System.out.println();
-                System.out.printf("  %s💥 %s failed. Log: %s%s%n", RED, app.name, result.logFile(), RESET);
+
+                // Show output areas for all builder slots (fixed layout)
+                System.out.println("  " + CYAN + "─── Build Output " + "─".repeat(40) + RESET);
+                synchronized (slotsLock) {
+                    for (int slot = 0; slot < buildThreads; slot++) {
+                        String builderId = String.format("Builder %d", slot + 1);
+                        BuilderSlot slotInfo = builderSlots[slot];
+                        if (slotInfo != null) {
+                            System.out.println("  " + YELLOW + "▶ [" + builderId + "] " + slotInfo.projectName() + RESET);
+                            printLogTail(slotInfo.logFile(), linesPerBuilder);
+                        } else {
+                            // Empty slot - always show with reserved space
+                            System.out.println("  " + DIM + "▷ [" + builderId + "] (idle)" + RESET);
+                            for (int i = 0; i < linesPerBuilder; i++) {
+                                System.out.println();
+                            }
+                        }
+                    }
+                }
+
+                // Track total lines printed for clearing (fixed size now)
+                // Header + status table + 1 empty + separator + (buildThreads * (header + linesPerBuilder))
+                lastOutputLines = countOutputLines() + 1 + (buildThreads * (1 + linesPerBuilder));
+
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+
+            // Collect results
+            for (Future<TestResult> future : futures) {
+                try {
+                    results.add(future.get());
+                } catch (Exception e) {
+                    // Error already handled in the task
+                }
+            }
+
+            executor.shutdown();
+
+            // Final status update
+            clearOutput();
+            printHeader();
+            printStatusTable();
+
+            // Show failures
+            for (TestResult result : results) {
+                if (!result.success() && !result.message().startsWith("Ignored:")) {
+                    System.out.println();
+                    System.out.printf("  %s💥 %s failed. Log: %s%s%n", RED, result.projectName(), result.logFile(), RESET);
+                }
             }
             System.out.println();
         }
 
         // Print final summary
-        printFinalSummary(results);
+        long totalTimeMs = System.currentTimeMillis() - buildStartTime;
+        printFinalSummary(results, totalTimeMs);
 
         boolean allPassed = results.stream()
                 .filter(r -> !r.message().startsWith("Ignored:"))
@@ -332,6 +477,7 @@ public class AddonTester implements Callable<Integer> {
 
         String statusStr = switch (status) {
             case PENDING -> DIM + "⏳ PENDING" + RESET;
+            case WAITING -> CYAN + "⏳ WAITING..." + RESET;
             case BUILDING -> YELLOW + "🔨 BUILDING..." + buildingTime + RESET;
             case PASSED -> GREEN + "✅ PASSED" + RESET + durationStr;
             case FAILED -> RED + "❌ FAILED" + RESET + durationStr;
@@ -339,6 +485,54 @@ public class AddonTester implements Callable<Integer> {
         };
 
         System.out.printf("    %-28s %s%n", name, statusStr);
+    }
+
+    private void printLogTail(Path logFile, int lines) {
+        try {
+            if (!Files.exists(logFile)) {
+                System.out.println("    " + DIM + "(waiting for output...)" + RESET);
+                return;
+            }
+            List<String> allLines = Files.readAllLines(logFile);
+            int start = Math.max(0, allLines.size() - lines);
+            for (int i = start; i < allLines.size(); i++) {
+                String line = allLines.get(i);
+                if (line.length() > 100) {
+                    line = line.substring(0, 97) + "...";
+                }
+                System.out.println("    " + DIM + line + RESET);
+            }
+            // Pad with empty lines if not enough output yet
+            for (int i = allLines.size(); i < lines; i++) {
+                System.out.println();
+            }
+        } catch (IOException e) {
+            System.out.println("    " + DIM + "(reading log...)" + RESET);
+        }
+    }
+
+    private int getTerminalHeight() {
+        // Try to get terminal height using tput
+        try {
+            ProcessBuilder pb = new ProcessBuilder("tput", "lines");
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            try (var reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line = reader.readLine();
+                if (line != null && process.waitFor(1, TimeUnit.SECONDS)) {
+                    return Integer.parseInt(line.trim());
+                }
+            }
+        } catch (Exception e) {
+            // Fallback: try LINES environment variable
+            String lines = System.getenv("LINES");
+            if (lines != null) {
+                try {
+                    return Integer.parseInt(lines.trim());
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+        return 0; // Unknown, use default
     }
 
     private void clearOutput() {
@@ -366,9 +560,89 @@ public class AddonTester implements Callable<Integer> {
         return lines;
     }
 
+    private TestResult runSmokeTest(Path workPath) {
+        long startTime = System.currentTimeMillis();
+        String name = "vaadin-project-archetype";
+        Path smokeTestPath = workPath.resolve("smoke-test");
+        Path logFile = workPath.resolve("smoke-test-build.log");
+
+        try {
+            // Clean up previous smoke test
+            if (Files.exists(smokeTestPath)) {
+                deleteDirectory(smokeTestPath);
+            }
+
+            // Generate project from archetype
+            System.out.println("  " + DIM + "📦 Generating project from Vaadin archetype..." + RESET);
+            List<String> archetypeArgs = List.of(
+                    "archetype:generate",
+                    "-B",  // Batch mode
+                    "-DarchetypeGroupId=com.vaadin",
+                    "-DarchetypeArtifactId=vaadin-archetype-application",
+                    "-DarchetypeVersion=LATEST",
+                    "-DgroupId=com.example",
+                    "-DartifactId=smoke-test",
+                    "-Dversion=1.0-SNAPSHOT"
+            );
+
+            List<String> mvnCmd = new ArrayList<>();
+            mvnCmd.add("mvn");
+            mvnCmd.addAll(archetypeArgs);
+            mvnCmd.addAll(getCommonMvnArgs());
+            System.out.println("  " + DIM + "$ " + String.join(" ", mvnCmd) + RESET);
+
+            int archetypeResult = runMavenSilent(workPath, logFile, null, archetypeArgs);
+            if (archetypeResult != 0) {
+                System.out.println("  " + RED + "❌ Archetype generation failed" + RESET);
+                return new TestResult(name, ProjectType.SMOKE_TEST, false, "Archetype generation failed", elapsed(startTime), logFile);
+            }
+
+            // Set Vaadin version (in case archetype version differs from target version)
+            System.out.println("  " + DIM + "🔧 Setting Vaadin version to " + vaadinVersion + "..." + RESET);
+            List<String> setPropertyArgs = new ArrayList<>();
+            setPropertyArgs.add("versions:set-property");
+            setPropertyArgs.add("-Dproperty=vaadin.version");
+            setPropertyArgs.add("-DnewVersion=" + vaadinVersion);
+            setPropertyArgs.add("-DgenerateBackupPoms=false");
+            setPropertyArgs.addAll(getCommonMvnArgs());
+            runMavenSilent(smokeTestPath, logFile, null, setPropertyArgs);
+
+            // Run verify to download all dependencies and compile
+            System.out.println("  " + DIM + "🔨 Building smoke test project..." + RESET);
+            List<String> verifyArgs = new ArrayList<>();
+            verifyArgs.add("clean");
+            verifyArgs.add("verify");
+            verifyArgs.add("-DskipTests");  // Skip tests for smoke test, just need compilation
+            verifyArgs.addAll(getCommonMvnArgs());
+
+            List<String> verifyCmdDisplay = new ArrayList<>();
+            verifyCmdDisplay.add("mvn");
+            verifyCmdDisplay.addAll(verifyArgs);
+            System.out.println("  " + DIM + "$ " + String.join(" ", verifyCmdDisplay) + RESET);
+
+            int verifyResult = runMavenSilent(smokeTestPath, logFile, null, verifyArgs);
+            if (verifyResult != 0) {
+                System.out.println("  " + RED + "❌ Smoke test build failed" + RESET);
+                return new TestResult(name, ProjectType.SMOKE_TEST, false, "Build failed", elapsed(startTime), logFile);
+            }
+
+            return new TestResult(name, ProjectType.SMOKE_TEST, true, "Build successful", elapsed(startTime), logFile);
+
+        } catch (Exception e) {
+            System.out.println("  " + RED + "❌ Smoke test error: " + e.getMessage() + RESET);
+            return new TestResult(name, ProjectType.SMOKE_TEST, false, "Error: " + e.getMessage(), elapsed(startTime), logFile);
+        }
+    }
+
     private TestResult testProject(String name, String repoUrl, String branch, String buildSubdir,
                                     String javaVersion, boolean useAddonsRepo, List<String> extraMvnArgs,
                                     ProjectType type, Path workPath) {
+        return testProject(name, repoUrl, branch, buildSubdir, javaVersion, useAddonsRepo, extraMvnArgs, type, workPath, false);
+    }
+
+    private TestResult testProject(String name, String repoUrl, String branch, String buildSubdir,
+                                    String javaVersion, boolean useAddonsRepo, List<String> extraMvnArgs,
+                                    ProjectType type, Path workPath, boolean silent) {
         long startTime = System.currentTimeMillis();
         Path projectPath = workPath.resolve(name);
         Path logFile = workPath.resolve(name + "-build.log");
@@ -376,13 +650,13 @@ public class AddonTester implements Callable<Integer> {
         try {
             // Clone or update repository
             if (!Files.exists(projectPath)) {
-                System.out.println("  " + DIM + "📥 Cloning " + repoUrl + "..." + RESET);
+                if (!silent) System.out.println("  " + DIM + "📥 Cloning " + repoUrl + "..." + RESET);
                 int cloneResult = runCommandSilent(workPath, logFile, "git", "clone", "--depth", "1", "--single-branch", repoUrl, name);
                 if (cloneResult != 0) {
                     return new TestResult(name, type, false, "Failed to clone repository", elapsed(startTime), logFile);
                 }
             } else {
-                System.out.println("  " + DIM + "🔄 Updating repository..." + RESET);
+                if (!silent) System.out.println("  " + DIM + "🔄 Updating repository..." + RESET);
                 // Discard any local changes (e.g., from versions plugin)
                 runCommandSilent(projectPath, logFile, "git", "checkout", "--", ".");
                 runCommandSilent(projectPath, logFile, "git", "fetch", "--depth", "1");
@@ -412,7 +686,7 @@ public class AddonTester implements Callable<Integer> {
             setPropertyArgs.add("-DnewVersion=" + vaadinVersion);
             setPropertyArgs.add("-DgenerateBackupPoms=false");
             setPropertyArgs.addAll(getCommonMvnArgs());
-            System.out.println("  " + DIM + "$ mvn " + String.join(" ", setPropertyArgs) + RESET);
+            if (!silent) System.out.println("  " + DIM + "$ mvn " + String.join(" ", setPropertyArgs) + RESET);
             runMavenSilent(buildPath, logFile, javaVersion, setPropertyArgs);
 
             // Also try versions:set for direct vaadin-bom references
@@ -422,7 +696,7 @@ public class AddonTester implements Callable<Integer> {
             setVersionArgs.add("-DartifactId=vaadin-bom");
             setVersionArgs.add("-DgenerateBackupPoms=false");
             setVersionArgs.addAll(getCommonMvnArgs());
-            System.out.println("  " + DIM + "$ mvn " + String.join(" ", setVersionArgs) + RESET);
+            if (!silent) System.out.println("  " + DIM + "$ mvn " + String.join(" ", setVersionArgs) + RESET);
             runMavenSilent(buildPath, logFile, javaVersion, setVersionArgs);
 
             // Run the actual build
@@ -434,9 +708,12 @@ public class AddonTester implements Callable<Integer> {
                 mvnArgs.add("-Pvaadin-addons"); // Enable Vaadin Directory repository
             }
             mvnArgs.addAll(extraMvnArgs);
-            System.out.println("  " + DIM + "$ mvn " + String.join(" ", mvnArgs) + RESET);
+            if (!silent) System.out.println("  " + DIM + "$ mvn " + String.join(" ", mvnArgs) + RESET);
 
-            int buildResult = runMavenWithTail(buildPath, logFile, javaVersion, mvnArgs);
+            // Use silent build for concurrent execution (output goes to log file, displayed via printLogTail)
+            int buildResult = silent
+                    ? runMavenSilent(buildPath, logFile, javaVersion, mvnArgs)
+                    : runMavenWithTail(buildPath, logFile, javaVersion, mvnArgs);
 
             if (buildResult == 0) {
                 return new TestResult(name, type, true, "Build successful", elapsed(startTime), logFile);
@@ -649,7 +926,7 @@ public class AddonTester implements Callable<Integer> {
         }
     }
 
-    private void printFinalSummary(List<TestResult> results) {
+    private void printFinalSummary(List<TestResult> results, long totalTimeMs) {
         System.out.println("-".repeat(60));
         System.out.println("📁 Build logs saved to: " + workDir + "/");
         System.out.println();
@@ -665,6 +942,7 @@ public class AddonTester implements Callable<Integer> {
             }
         }
 
+        String totalTimeStr = formatDuration(totalTimeMs);
         String summaryIcon = failed == 0 ? "🎉" : "💔";
         System.out.printf("%s Total: %d | %s✅ Passed: %d%s | %s❌ Failed: %d%s | ⏭️  Ignored: %d%n",
                 summaryIcon,
@@ -672,13 +950,29 @@ public class AddonTester implements Callable<Integer> {
                 GREEN, passed, RESET,
                 failed > 0 ? RED : "", failed, failed > 0 ? RESET : "",
                 ignored);
+        System.out.println("⏱️  Total time: " + totalTimeStr);
         System.out.println("=".repeat(60));
 
         // Write markdown report
-        writeMarkdownReport(results, passed, failed, ignored);
+        writeMarkdownReport(results, passed, failed, ignored, totalTimeMs);
     }
 
-    private void writeMarkdownReport(List<TestResult> results, int passed, int failed, int ignored) {
+    private String formatDuration(long ms) {
+        long seconds = ms / 1000;
+        if (seconds < 60) {
+            return String.format("%.1fs", ms / 1000.0);
+        }
+        long minutes = seconds / 60;
+        seconds = seconds % 60;
+        if (minutes < 60) {
+            return String.format("%dm %ds", minutes, seconds);
+        }
+        long hours = minutes / 60;
+        minutes = minutes % 60;
+        return String.format("%dh %dm %ds", hours, minutes, seconds);
+    }
+
+    private void writeMarkdownReport(List<TestResult> results, int passed, int failed, int ignored, long totalTimeMs) {
         Path reportPath = Path.of(workDir, "results.md");
         try (BufferedWriter writer = Files.newBufferedWriter(reportPath)) {
             String status = failed == 0 ? "🎉 All tests passed" : "💔 Some tests failed";
@@ -688,11 +982,23 @@ public class AddonTester implements Callable<Integer> {
             writer.write("# Vaadin Ecosystem Build Report\n\n");
             writer.write("**Vaadin Version:** `" + vaadinVersion + "`\n");
             writer.write("**Last Run:** " + timestamp + "\n");
+            writer.write("**Total Time:** " + formatDuration(totalTimeMs) + "\n");
             writer.write("**Status:** " + status + "\n\n");
 
             // Group by type
+            var smokeTestResults = results.stream().filter(r -> r.type() == ProjectType.SMOKE_TEST).toList();
             var addonResults = results.stream().filter(r -> r.type() == ProjectType.ADDON).toList();
             var appResults = results.stream().filter(r -> r.type() == ProjectType.APP).toList();
+
+            if (!smokeTestResults.isEmpty()) {
+                writer.write("## 🔥 Smoke Test\n\n");
+                writer.write("| Project | Status | Duration |\n");
+                writer.write("|---------|--------|----------|\n");
+                for (TestResult result : smokeTestResults) {
+                    writeResultRow(writer, result);
+                }
+                writer.write("\n");
+            }
 
             if (!addonResults.isEmpty()) {
                 writer.write("## 📦 Add-ons\n\n");
