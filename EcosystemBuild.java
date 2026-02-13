@@ -798,41 +798,44 @@ public class EcosystemBuild implements Callable<Integer> {
 
     /**
      * Check if there's an open GitHub issue for this project and version.
+     * Uses GitHub REST API (no authentication needed for public repos).
      * @return The issue URL if found, null otherwise
      */
     private String findOpenGitHubIssue(String projectName, String version) {
         try {
-            // Use gh CLI to check for open issues containing both project name and version
-            // Search query: project name AND version (e.g., "super-fields 25.0-SNAPSHOT")
-            String searchQuery = projectName + " " + version;
-            ProcessBuilder pb = new ProcessBuilder(
-                    "gh", "issue", "list",
-                    "--repo", "mstahv/vaadin-ecosystem-build",
-                    "--state", "open",
-                    "--search", searchQuery,
-                    "--json", "number,url",
-                    "--limit", "1"
-            );
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
+            // Use GitHub REST API to search for open issues
+            // Search in repo for issues containing project name and version
+            String searchQuery = java.net.URLEncoder.encode(
+                    "repo:mstahv/vaadin-ecosystem-build is:issue is:open " + projectName + " " + version,
+                    java.nio.charset.StandardCharsets.UTF_8);
+            String url = "https://api.github.com/search/issues?q=" + searchQuery + "&per_page=1";
 
-            String output;
-            try (var reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                output = reader.lines().collect(java.util.stream.Collectors.joining());
-            }
+            HttpClient client = HttpClient.newBuilder()
+                    .connectTimeout(java.time.Duration.ofSeconds(10))
+                    .build();
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Accept", "application/vnd.github+json")
+                    .timeout(java.time.Duration.ofSeconds(10))
+                    .GET()
+                    .build();
 
-            if (process.waitFor(10, TimeUnit.SECONDS) && process.exitValue() == 0) {
-                // Parse JSON to extract URL: [{"number":1,"url":"https://..."}]
-                if (output != null && !output.trim().equals("[]")) {
-                    // Simple JSON parsing - extract URL
-                    var urlMatch = Pattern.compile("\"url\":\"([^\"]+)\"").matcher(output);
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                String body = response.body();
+                // Check if there are results: "total_count":1 or more
+                var countMatch = Pattern.compile("\"total_count\"\\s*:\\s*(\\d+)").matcher(body);
+                if (countMatch.find() && Integer.parseInt(countMatch.group(1)) > 0) {
+                    // Extract the HTML URL of the first issue
+                    var urlMatch = Pattern.compile("\"html_url\"\\s*:\\s*\"([^\"]+/issues/\\d+)\"").matcher(body);
                     if (urlMatch.find()) {
                         return urlMatch.group(1);
                     }
                 }
             }
         } catch (Exception e) {
-            // gh CLI not available or error - assume no known issue
+            // API error - assume no known issue
         }
         return null;
     }
