@@ -1178,9 +1178,9 @@ public class EcosystemBuild implements Callable<Integer> {
             writer.write("vaadin_version=" + vaadinVersion);
             writer.newLine();
 
-            // Write each failed project (not known issues, not ignored)
+            // Write each failed project (including known issues - they're still failing!)
             for (var entry : statusMap.entrySet()) {
-                if (entry.getValue() == BuildStatus.FAILED) {
+                if (entry.getValue() == BuildStatus.FAILED || entry.getValue() == BuildStatus.KNOWN_ISSUE) {
                     writer.write(entry.getKey());
                     writer.newLine();
                 }
