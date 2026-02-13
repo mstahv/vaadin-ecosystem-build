@@ -32,6 +32,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          clean: false  # Preserve work directory with previous build results
 
       - name: Set up Java
         uses: actions/setup-java@v4
