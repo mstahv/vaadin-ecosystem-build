@@ -55,6 +55,7 @@ public class EcosystemBuild implements Callable<Integer> {
     private int buildThreads;
 
     private boolean useCustomSettings = false;
+    private Path versionOutputPath;  // Version-specific output directory for logs and reports
 
     // Project types
     enum ProjectType { SMOKE_TEST, ADDON, APP }
@@ -177,6 +178,10 @@ public class EcosystemBuild implements Callable<Integer> {
         }
 
         Files.createDirectories(workPath);
+
+        // Create version-specific output directory for logs and reports
+        versionOutputPath = workPath.resolve(vaadinVersion);
+        Files.createDirectories(versionOutputPath);
 
         // Run smoke test first to validate Vaadin version and cache artifacts
         System.out.println("🔥 Running smoke test to validate Vaadin " + vaadinVersion + "...");
@@ -452,7 +457,7 @@ public class EcosystemBuild implements Callable<Integer> {
         printFinalSummary(results, totalTimeMs);
 
         // Write list of failed projects for CI integration
-        writeFailedProjectsList(workPath);
+        writeFailedProjectsList();
 
         // Count failures (known issues don't count as failures)
         boolean allPassed = statusMap.values().stream()
@@ -593,7 +598,7 @@ public class EcosystemBuild implements Callable<Integer> {
         long startTime = System.currentTimeMillis();
         String name = "vaadin-project-archetype";
         Path smokeTestPath = workPath.resolve("smoke-test");
-        Path logFile = workPath.resolve("smoke-test-build.log");
+        Path logFile = versionOutputPath.resolve("smoke-test-build.log");
 
         try {
             // Clean up previous smoke test
@@ -674,7 +679,7 @@ public class EcosystemBuild implements Callable<Integer> {
                                     ProjectType type, Path workPath, boolean silent) {
         long startTime = System.currentTimeMillis();
         Path projectPath = workPath.resolve(name);
-        Path logFile = workPath.resolve(name + "-build.log");
+        Path logFile = versionOutputPath.resolve(name + "-build.log");
 
         try {
             // Clone or update repository
@@ -988,7 +993,7 @@ public class EcosystemBuild implements Callable<Integer> {
 
     private void printFinalSummary(List<TestResult> results, long totalTimeMs) {
         System.out.println("-".repeat(60));
-        System.out.println("📁 Build logs saved to: " + workDir + "/");
+        System.out.println("📁 Build logs saved to: " + versionOutputPath + "/");
         System.out.println();
 
         int passed = 0, failed = 0, knownIssues = 0, ignored = 0;
@@ -1042,7 +1047,7 @@ public class EcosystemBuild implements Callable<Integer> {
     }
 
     private void writeMarkdownReport(List<TestResult> results, int passed, int failed, int knownIssues, int ignored, long totalTimeMs) {
-        Path reportPath = Path.of(workDir, "results.md");
+        Path reportPath = versionOutputPath.resolve("results.md");
         try (BufferedWriter writer = Files.newBufferedWriter(reportPath)) {
             String status;
             if (failed == 0 && knownIssues == 0) {
@@ -1134,8 +1139,8 @@ public class EcosystemBuild implements Callable<Integer> {
         writer.write("| " + result.projectName() + " | " + statusEmoji + " | " + duration + " |\n");
     }
 
-    private void writeFailedProjectsList(Path workPath) {
-        Path failedFile = workPath.resolve("failed-projects.txt");
+    private void writeFailedProjectsList() {
+        Path failedFile = versionOutputPath.resolve("failed-projects.txt");
         try (BufferedWriter writer = Files.newBufferedWriter(failedFile)) {
             // Write Vaadin version as first line for CI to use
             writer.write("vaadin_version=" + vaadinVersion);

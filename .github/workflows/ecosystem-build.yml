@@ -97,9 +97,7 @@ jobs:
         with:
           name: build-logs-${{ steps.test.outputs.actual_version || 'unknown' }}
           path: |
-            work/*.log
-            work/*.txt
-            work/results.md
+            work/${{ steps.test.outputs.actual_version }}/*
           retention-days: 7
 
       - name: Create issues for failed projects
@@ -117,7 +115,7 @@ jobs:
             // Read failed projects from file
             let failedProjects = [];
             try {
-              const content = fs.readFileSync('work/failed-projects.txt', 'utf8');
+              const content = fs.readFileSync(`work/${version}/failed-projects.txt`, 'utf8');
               const lines = content.trim().split('\n');
               // Skip first line (vaadin_version=...)
               failedProjects = lines.slice(1).filter(line => line.trim());
@@ -188,7 +186,7 @@ jobs:
             // Read failed projects to know which ones are still failing
             let failedProjects = [];
             try {
-              const content = fs.readFileSync('work/failed-projects.txt', 'utf8');
+              const content = fs.readFileSync(`work/${version}/failed-projects.txt`, 'utf8');
               const lines = content.trim().split('\n');
               failedProjects = lines.slice(1).filter(line => line.trim());
             } catch (e) {
