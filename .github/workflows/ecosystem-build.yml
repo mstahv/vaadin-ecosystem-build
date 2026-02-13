@@ -76,16 +76,20 @@ jobs:
 
           if [ -n "$VERSION" ]; then
             jbang EcosystemBuild.java -q -t 5 -j 2 -v "$VERSION" 2>&1 | tee test-output.txt
+            EXIT_CODE=${PIPESTATUS[0]}
           else
             jbang EcosystemBuild.java -q -t 5 -j 2 2>&1 | tee test-output.txt
+            EXIT_CODE=${PIPESTATUS[0]}
           fi
 
-          # Extract actual version used (from script output)
-          ACTUAL_VERSION=$(grep -oP 'Using.*Vaadin version: \K[0-9a-zA-Z.\-]+' test-output.txt | head -1 || echo "$VERSION")
-          echo "actual_version=$ACTUAL_VERSION" >> $GITHUB_OUTPUT
+          # Capture exit code immediately (PIPESTATUS gets overwritten by subsequent commands)
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          echo "Build exit code: $EXIT_CODE"
 
-          # Capture exit code
-          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+          # Extract actual version used (from script output)
+          ACTUAL_VERSION=$(grep -oE 'Using (custom )?Vaadin version: [0-9a-zA-Z.\-]+' test-output.txt | head -1 | sed 's/.*: //' || echo "$VERSION")
+          echo "actual_version=$ACTUAL_VERSION" >> $GITHUB_OUTPUT
+          echo "Detected Vaadin version: $ACTUAL_VERSION"
 
       - name: Upload build logs
         if: always()
