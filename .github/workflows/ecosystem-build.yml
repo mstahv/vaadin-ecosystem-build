@@ -143,6 +143,46 @@ jobs:
               });
             }
 
+      - name: Close resolved issues
+        if: steps.test.outputs.exit_code == '0'
+        uses: actions/github-script@v7
+        env:
+          ACTUAL_VERSION: ${{ steps.test.outputs.actual_version }}
+        with:
+          script: |
+            const version = process.env.ACTUAL_VERSION || 'unknown';
+
+            // Find open issues for this version
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'build-failure'
+            });
+
+            const matchingIssues = issues.data.filter(i => i.title.includes(version));
+
+            for (const issue of matchingIssues) {
+              // Add comment explaining the closure
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `✅ Build now passing for Vaadin ${version}.\n\n**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+              });
+
+              // Close the issue
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+                state_reason: 'completed'
+              });
+
+              console.log(`Closed issue #${issue.number}: ${issue.title}`);
+            }
+
       - name: Fail if tests failed
         if: steps.test.outputs.exit_code != '0'
         run: exit 1
