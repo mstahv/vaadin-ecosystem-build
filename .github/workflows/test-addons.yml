@@ -4,6 +4,8 @@ on:
   schedule:
     # Run hourly against snapshots
     - cron: '0 * * * *'
+    # Run daily at 6:00 UTC against latest stable release
+    - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
       vaadin_version:
@@ -16,7 +18,7 @@ on:
 permissions: {}
 
 env:
-  SCHEDULED_VERSION: '25.0-SNAPSHOT'
+  SNAPSHOT_VERSION: '25.0-SNAPSHOT'
 
 jobs:
   test:
@@ -50,12 +52,24 @@ jobs:
         continue-on-error: true
         run: |
           source "$HOME/.sdkman/bin/sdkman-init.sh"
+
+          # Determine version based on trigger
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            VERSION="$SCHEDULED_VERSION"
+            if [ "${{ github.event.schedule }}" = "0 * * * *" ]; then
+              # Hourly schedule - test snapshots
+              VERSION="$SNAPSHOT_VERSION"
+              echo "build_type=snapshot" >> $GITHUB_OUTPUT
+            else
+              # Daily schedule - test latest stable (empty = auto-detect)
+              VERSION=""
+              echo "build_type=release" >> $GITHUB_OUTPUT
+            fi
           elif [ -n "${{ github.event.inputs.vaadin_version }}" ]; then
             VERSION="${{ github.event.inputs.vaadin_version }}"
+            echo "build_type=manual" >> $GITHUB_OUTPUT
           else
             VERSION=""
+            echo "build_type=manual" >> $GITHUB_OUTPUT
           fi
 
           echo "vaadin_version=$VERSION" >> $GITHUB_OUTPUT
@@ -66,6 +80,10 @@ jobs:
             jbang EcosystemBuild.java -q -t 5 -j 2 2>&1 | tee test-output.txt
           fi
 
+          # Extract actual version used (from script output)
+          ACTUAL_VERSION=$(grep -oP 'Using.*Vaadin version: \K[0-9a-zA-Z.\-]+' test-output.txt | head -1 || echo "$VERSION")
+          echo "actual_version=$ACTUAL_VERSION" >> $GITHUB_OUTPUT
+
           # Capture exit code
           echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
 
@@ -73,7 +91,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs
+          name: build-logs-${{ steps.test.outputs.actual_version || 'unknown' }}
           path: |
             work/*.log
             work/results.md
@@ -82,17 +100,25 @@ jobs:
       - name: Create issue on failure
         if: steps.test.outputs.exit_code != '0' && github.event_name == 'schedule'
         uses: actions/github-script@v7
+        env:
+          ACTUAL_VERSION: ${{ steps.test.outputs.actual_version }}
+          BUILD_TYPE: ${{ steps.test.outputs.build_type }}
         with:
           script: |
-            const title = `Scheduled build failed for Vaadin ${process.env.SCHEDULED_VERSION}`;
-            const body = `The hourly scheduled add-on compatibility test failed.
+            const version = process.env.ACTUAL_VERSION || 'unknown';
+            const buildType = process.env.BUILD_TYPE;
+            const scheduleType = buildType === 'snapshot' ? 'hourly snapshot' : 'daily release';
 
-            **Vaadin Version:** ${process.env.SCHEDULED_VERSION}
+            const title = `Build failed: Vaadin ${version}`;
+            const body = `The ${scheduleType} ecosystem build failed.
+
+            **Vaadin Version:** ${version}
+            **Build Type:** ${buildType}
             **Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
 
             Please check the build logs for details.`;
 
-            // Check if similar issue already exists
+            // Check if similar issue already exists (matching version)
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -100,7 +126,7 @@ jobs:
               labels: 'build-failure'
             });
 
-            const existingIssue = issues.data.find(i => i.title.includes(process.env.SCHEDULED_VERSION));
+            const existingIssue = issues.data.find(i => i.title.includes(version));
             if (!existingIssue) {
               await github.rest.issues.create({
                 owner: context.repo.owner,

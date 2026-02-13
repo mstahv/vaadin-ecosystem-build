@@ -1,12 +1,12 @@
 # Vaadin Ecosystem Build
 
-[![Nightly Build](https://github.com/mstahv/addon-tester/actions/workflows/test-addons.yml/badge.svg?event=schedule)](https://github.com/mstahv/addon-tester/actions/workflows/test-addons.yml)
+[![Nightly Build](https://github.com/mstahv/vaadin-ecosystem-build/actions/workflows/test-addons.yml/badge.svg?event=schedule)](https://github.com/mstahv/vaadin-ecosystem-build/actions/workflows/test-addons.yml)
 
-**[View Latest Test Results](https://github.com/mstahv/addon-tester/actions/workflows/test-addons.yml)** - Download `build-logs` artifact for full report (`results.md`)
+**[View Latest Test Results](https://github.com/mstahv/vaadin-ecosystem-build/actions/workflows/test-addons.yml)** - Download `build-logs` artifact for full report (`results.md`)
 
 This project continuously validates that popular Vaadin add-ons and example applications build successfully against the latest Vaadin framework versions, including snapshots. It helps detect compatibility issues early, before they affect end users.
 
-**Want your project included?** [Create an issue](https://github.com/mstahv/addon-tester/issues/new) to propose your add-on or application for the test battery.
+**Want your project included?** [Create an issue](https://github.com/mstahv/vaadin-ecosystem-build/issues/new) to propose your add-on or application for the test battery.
 
 A JBang script for testing Vaadin ecosystem projects (add-ons and applications) against different Vaadin framework versions.
 
@@ -146,10 +146,15 @@ This allows testing projects against unreleased Vaadin versions:
 The repository includes a GitHub Actions workflow with:
 
 ### Scheduled Runs
-- Runs hourly against Vaadin `25.0-SNAPSHOT` on self-hosted runner
-- Work directory preserved between runs for faster incremental builds
+- **Hourly**: Tests against Vaadin `25.0-SNAPSHOT` to catch regressions early
+- **Daily** (6:00 UTC): Tests against the latest stable release from Maven Central
+- Runs on self-hosted runner with work directory preserved between runs
 - Creates a GitHub issue with `build-failure` label if the build fails
+- Issues include the specific Vaadin version for tracking
 - Watch the repository to get notified of new issues
+
+### Known Issue Detection
+If a project fails but has an open GitHub issue that mentions both the project name and the Vaadin version being tested, it will be marked as "known issue" instead of failing the build. This prevents repeated notifications for already-tracked problems.
 
 ### Manual Runs
 1. Go to **Actions** tab in GitHub

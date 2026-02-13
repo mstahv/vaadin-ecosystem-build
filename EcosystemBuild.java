@@ -278,7 +278,7 @@ public class EcosystemBuild implements Callable<Integer> {
                 BuildStatus finalStatus;
                 if (result.success()) {
                     finalStatus = BuildStatus.PASSED;
-                } else if (hasOpenGitHubIssue(task.name)) {
+                } else if (hasOpenGitHubIssue(task.name, vaadinVersion)) {
                     finalStatus = BuildStatus.KNOWN_ISSUE;
                 } else {
                     finalStatus = BuildStatus.FAILED;
@@ -353,7 +353,7 @@ public class EcosystemBuild implements Callable<Integer> {
                         BuildStatus finalStatus;
                         if (result.success()) {
                             finalStatus = BuildStatus.PASSED;
-                        } else if (hasOpenGitHubIssue(task.name)) {
+                        } else if (hasOpenGitHubIssue(task.name, vaadinVersion)) {
                             finalStatus = BuildStatus.KNOWN_ISSUE;
                         } else {
                             finalStatus = BuildStatus.FAILED;
@@ -774,14 +774,16 @@ public class EcosystemBuild implements Callable<Integer> {
         return "main"; // Default fallback
     }
 
-    private boolean hasOpenGitHubIssue(String projectName) {
+    private boolean hasOpenGitHubIssue(String projectName, String version) {
         try {
-            // Use gh CLI to check for open issues containing the project name
+            // Use gh CLI to check for open issues containing both project name and version
+            // Search query: project name AND version (e.g., "super-fields 25.0-SNAPSHOT")
+            String searchQuery = projectName + " " + version;
             ProcessBuilder pb = new ProcessBuilder(
                     "gh", "issue", "list",
-                    "--repo", "mstahv/addon-tester",
+                    "--repo", "mstahv/vaadin-ecosystem-build",
                     "--state", "open",
-                    "--search", projectName,
+                    "--search", searchQuery,
                     "--json", "number",
                     "--limit", "1"
             );
