@@ -760,9 +760,27 @@ public class EcosystemBuild implements Callable<Integer> {
                 runCommandSilent(projectPath, logFile, "git", "checkout", "--", ".");
                 // Fetch the specific branch or default
                 String targetBranch = branch != null ? branch : getDefaultBranch(projectPath, logFile);
-                runCommandSilent(projectPath, logFile, "git", "fetch", "--depth", "1", "origin", targetBranch);
-                runCommandSilent(projectPath, logFile, "git", "checkout", targetBranch);
-                runCommandSilent(projectPath, logFile, "git", "reset", "--hard", "origin/" + targetBranch);
+                int fetchResult = runCommandSilent(projectPath, logFile, "git", "fetch", "--depth", "1", "origin", targetBranch);
+                int checkoutResult = runCommandSilent(projectPath, logFile, "git", "checkout", targetBranch);
+
+                // If branch doesn't exist locally (e.g., config changed), re-clone
+                if (fetchResult != 0 || checkoutResult != 0) {
+                    if (!silent) System.out.println("  " + DIM + "🔄 Branch mismatch, re-cloning..." + RESET);
+                    deleteDirectory(projectPath);
+                    List<String> cloneCmd = new ArrayList<>(List.of("git", "clone", "--depth", "1", "--single-branch"));
+                    if (branch != null) {
+                        cloneCmd.add("-b");
+                        cloneCmd.add(branch);
+                    }
+                    cloneCmd.add(repoUrl);
+                    cloneCmd.add(name);
+                    int cloneResult = runCommandSilent(workPath, logFile, cloneCmd.toArray(new String[0]));
+                    if (cloneResult != 0) {
+                        return new TestResult(name, type, false, "Failed to clone repository", elapsed(startTime), logFile);
+                    }
+                } else {
+                    runCommandSilent(projectPath, logFile, "git", "reset", "--hard", "origin/" + targetBranch);
+                }
             }
 
             // Build with specified Vaadin version
