@@ -46,6 +46,10 @@ public class EcosystemBuild implements Callable<Integer> {
             repoUrl = "https://github.com/viritin/flow-viritin";
         }},
         new AddonProject() {{
+            name = "dramafinder";
+            repoUrl = "https://github.com/parttio/dramafinder";
+        }},
+        new AddonProject() {{
             name = "grid-pagination";
             repoUrl = "https://github.com/parttio/grid-pagination";
         }},
