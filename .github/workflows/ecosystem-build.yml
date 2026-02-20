@@ -2,8 +2,12 @@ name: Ecosystem Build
 
 on:
   schedule:
-    # Run hourly against snapshots
-    - cron: '0 * * * *'
+    # Run every 3 hours against 25.0-SNAPSHOT (at 0, 3, 9, 12, 15, 18, 21 - skipping 6 for stable)
+    - cron: '0 0,3,9,12,15,18,21 * * *'
+    # Run every 3 hours against 25.1-SNAPSHOT (at 1, 4, 7, 10, 13, 16, 19, 22)
+    - cron: '0 1,4,7,10,13,16,19,22 * * *'
+    # Run daily at 5:00 UTC against 24.9-SNAPSHOT
+    - cron: '0 5 * * *'
     # Run daily at 6:00 UTC against latest stable release
     - cron: '0 6 * * *'
   workflow_dispatch:
@@ -18,7 +22,9 @@ on:
 permissions: {}
 
 env:
-  SNAPSHOT_VERSION: '25.0-SNAPSHOT'
+  SNAPSHOT_25_0: '25.0-SNAPSHOT'
+  SNAPSHOT_25_1: '25.1-SNAPSHOT'
+  SNAPSHOT_24_9: '24.9-SNAPSHOT'
 
 jobs:
   test:
@@ -57,9 +63,17 @@ jobs:
 
           # Determine version based on trigger
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            if [ "${{ github.event.schedule }}" = "0 * * * *" ]; then
-              # Hourly schedule - test snapshots
-              VERSION="$SNAPSHOT_VERSION"
+            if [ "${{ github.event.schedule }}" = "0 0,3,9,12,15,18,21 * * *" ]; then
+              # 25.0-SNAPSHOT schedule (every 3 hours)
+              VERSION="$SNAPSHOT_25_0"
+              echo "build_type=snapshot" >> $GITHUB_OUTPUT
+            elif [ "${{ github.event.schedule }}" = "0 1,4,7,10,13,16,19,22 * * *" ]; then
+              # 25.1-SNAPSHOT schedule (every 3 hours, offset)
+              VERSION="$SNAPSHOT_25_1"
+              echo "build_type=snapshot" >> $GITHUB_OUTPUT
+            elif [ "${{ github.event.schedule }}" = "0 5 * * *" ]; then
+              # 24.9-SNAPSHOT schedule (daily at 5:00 UTC)
+              VERSION="$SNAPSHOT_24_9"
               echo "build_type=snapshot" >> $GITHUB_OUTPUT
             else
               # Daily schedule - test latest stable (empty = auto-detect)

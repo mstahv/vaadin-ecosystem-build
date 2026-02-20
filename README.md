@@ -158,8 +158,8 @@ This allows testing projects against unreleased Vaadin versions:
 The repository includes a GitHub Actions workflow with:
 
 ### Scheduled Runs
-- **Hourly**: Tests against Vaadin `25.0-SNAPSHOT` to catch regressions early
-- **Daily** (6:00 UTC): Tests against the latest stable release from Maven Central
+- **Every 3 hours**: Tests against Vaadin `25.0-SNAPSHOT` and `25.1-SNAPSHOT` (staggered) to catch regressions early
+- **Daily**: Tests against `24.9-SNAPSHOT` (5:00 UTC) and the latest stable release from Maven Central (6:00 UTC)
 - Runs on self-hosted runner with work directory preserved between runs
 - Creates a GitHub issue with `build-failure` label if the build fails
 - Issues include the specific Vaadin version for tracking
