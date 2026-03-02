@@ -798,6 +798,7 @@ public class EcosystemBuild implements Callable<Integer> {
             verifyArgs.add("clean");
             verifyArgs.add("verify");
             verifyArgs.add("-DskipTests");  // Skip tests for smoke test, just need compilation
+            if (vaadinVersion != null && vaadinVersion.contains("SNAPSHOT")) verifyArgs.add("-U"); // Force snapshot updates
             verifyArgs.addAll(getCommonMvnArgs());
 
             List<String> verifyCmdDisplay = new ArrayList<>();
