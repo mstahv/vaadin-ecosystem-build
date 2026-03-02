@@ -267,28 +267,58 @@ jobs:
               labels: 'build-failure'
             });
 
-            // Close issues for projects that are now passing (for this version)
-            const versionIssues = issues.data.filter(i => i.title.includes(version));
+            // Helper: parse "major.minor.patch" from a version string, returns null for snapshots
+            function parseStableVersion(v) {
+              const m = v.match(/^(\d+)\.(\d+)\.(\d+)$/);
+              return m ? { major: parseInt(m[1]), minor: parseInt(m[2]), patch: parseInt(m[3]) } : null;
+            }
 
-            for (const issue of versionIssues) {
-              // Extract project name from title "Build failing: <project> against Vaadin <version>"
-              const match = issue.title.match(/Build failing: (.+) against Vaadin/);
+            const currentParsed = parseStableVersion(version);
+
+            // Close issues for projects that are now passing
+            for (const issue of issues.data) {
+              const match = issue.title.match(/Build failing: (.+) against Vaadin (.+)$/);
               if (!match) continue;
 
               const project = match[1];
+              const issueVersion = match[2];
+
+              // Check if this issue is for the current version
+              let isCurrentVersion = issueVersion === version;
+
+              // For stable releases, also match older patch versions in the same minor series
+              // e.g. when testing 25.0.6, also close issues for 25.0.5, 25.0.4, etc.
+              let isOlderPatch = false;
+              if (!isCurrentVersion && currentParsed) {
+                const issueParsed = parseStableVersion(issueVersion);
+                if (issueParsed
+                    && issueParsed.major === currentParsed.major
+                    && issueParsed.minor === currentParsed.minor
+                    && issueParsed.patch < currentParsed.patch) {
+                  isOlderPatch = true;
+                }
+              }
+
+              if (!isCurrentVersion && !isOlderPatch) continue;
 
               // If project is still failing, don't close
               if (failedProjects.includes(project)) {
-                console.log(`${project} still failing, keeping issue #${issue.number} open`);
+                if (isCurrentVersion) {
+                  console.log(`${project} still failing, keeping issue #${issue.number} open`);
+                }
                 continue;
               }
 
               // Project is now passing, close the issue
+              const closeMessage = isOlderPatch
+                ? `✅ **${project}** now builds successfully against Vaadin ${version} (supersedes ${issueVersion}).`
+                : `✅ **${project}** now builds successfully against Vaadin ${version}.`;
+
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: issue.number,
-                body: `✅ **${project}** now builds successfully against Vaadin ${version}.\n\n**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+                body: `${closeMessage}\n\n**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
               });
 
               await github.rest.issues.update({
