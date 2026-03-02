@@ -10,6 +10,8 @@ import java.io.*;
 import java.net.URI;
 import java.net.http.*;
 import java.nio.file.*;
+import java.time.*;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -235,6 +237,9 @@ public class EcosystemBuild implements Callable<Integer> {
             System.out.println("🧹 Cleaning version output directory: " + versionOutputPath);
             deleteDirectory(versionOutputPath);
         }
+
+        // Archive previous build logs before starting fresh
+        archivePreviousLogs(workPath, vaadinVersion);
         Files.createDirectories(versionOutputPath);
 
         // Run smoke test first to validate Vaadin version and cache artifacts
@@ -374,7 +379,6 @@ public class EcosystemBuild implements Callable<Integer> {
 
                     String originalVersion = detectProjectVaadinVersion(buildPath, task.javaVersion);
                     Path verifyLog = versionOutputPath.resolve(task.name + "-original-build.log");
-                    Files.deleteIfExists(verifyLog);
                     boolean buildsWithOriginal = verifyWithOriginalVersion(buildPath, task.javaVersion,
                             task.useAddonsRepo, task.extraMvnArgs, verifyLog);
 
@@ -457,7 +461,6 @@ public class EcosystemBuild implements Callable<Integer> {
                         Path buildPath = task.buildSubdir != null ? projectPath.resolve(task.buildSubdir) : projectPath;
                         String originalVersion = detectProjectVaadinVersion(buildPath, task.javaVersion);
                         Path verifyLog = versionOutputPath.resolve(task.name + "-original-build.log");
-                        Files.deleteIfExists(verifyLog);
                         boolean buildsWithOriginal = verifyWithOriginalVersion(buildPath, task.javaVersion,
                                 task.useAddonsRepo, task.extraMvnArgs, verifyLog);
                         metadata = new FailureMetadata(task.repoUrl, originalVersion, buildsWithOriginal, task.notifyUsers);
@@ -718,9 +721,6 @@ public class EcosystemBuild implements Callable<Integer> {
         Path logFile = versionOutputPath.resolve("smoke-test-build.log");
 
         try {
-            // Clear previous log file so re-builds start fresh
-            Files.deleteIfExists(logFile);
-
             // Clean up previous smoke test
             if (Files.exists(smokeTestPath)) {
                 deleteDirectory(smokeTestPath);
@@ -802,9 +802,6 @@ public class EcosystemBuild implements Callable<Integer> {
         Path logFile = versionOutputPath.resolve(name + "-build.log");
 
         try {
-            // Clear previous log file so re-builds start fresh
-            Files.deleteIfExists(logFile);
-
             // Clone or update repository
             if (!Files.exists(projectPath)) {
                 if (!silent) System.out.println("  " + DIM + "📥 Cloning " + repoUrl + "..." + RESET);
@@ -1192,6 +1189,42 @@ public class EcosystemBuild implements Callable<Integer> {
         }
         System.err.println("📦 Using fallback version: " + FALLBACK_VERSION);
         return FALLBACK_VERSION;
+    }
+
+    private void archivePreviousLogs(Path workPath, String version) throws IOException {
+        Path versionDir = workPath.resolve(version);
+        if (!Files.exists(versionDir)) return;
+
+        // Archive to work/<version>-archives/<timestamp>/
+        Path archivesDir = workPath.resolve(version + "-archives");
+        String timestamp = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss").format(LocalDateTime.now());
+        Path archiveTarget = archivesDir.resolve(timestamp);
+        Files.createDirectories(archiveTarget);
+
+        // Move all files from the version directory into the archive
+        try (var entries = Files.list(versionDir)) {
+            entries.forEach(source -> {
+                try {
+                    Files.move(source, archiveTarget.resolve(source.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException e) {
+                    System.err.println("Warning: Could not archive " + source.getFileName() + ": " + e.getMessage());
+                }
+            });
+        }
+
+        // Delete archives older than 7 days
+        Instant cutoff = Instant.now().minus(Duration.ofDays(7));
+        try (var archives = Files.list(archivesDir)) {
+            archives.forEach(dir -> {
+                try {
+                    if (Files.isDirectory(dir) && Files.getLastModifiedTime(dir).toInstant().isBefore(cutoff)) {
+                        deleteDirectory(dir);
+                    }
+                } catch (IOException e) {
+                    System.err.println("Warning: Could not clean up old archive " + dir.getFileName() + ": " + e.getMessage());
+                }
+            });
+        }
     }
 
     private void deleteDirectory(Path path) throws IOException {
