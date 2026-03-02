@@ -221,6 +221,7 @@ jobs:
                 `**Vaadin Version:** ${version}`,
                 `**Build Type:** ${buildType}`,
                 `**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                `**Build Log:** [${project}-build.log](https://ecosystembuild.parttio.org/logs/${version}/${project}-build.log)`,
               ];
 
               if (metadata) {
