@@ -14,6 +14,7 @@ import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.*;
 
@@ -51,6 +52,7 @@ public class EcosystemBuild implements Callable<Integer> {
             name = "dramafinder";
             repoUrl = "https://github.com/parttio/dramafinder";
             notifyUsers = List.of("jcgueriaud1");
+            timeoutMinutes = 10;
         }},
         new AddonProject() {{
             name = "sortable-layout";
@@ -139,7 +141,7 @@ public class EcosystemBuild implements Callable<Integer> {
     @Option(names = {"--quiet-downloads", "-q"}, description = "Silence Maven download progress messages")
     private boolean quietDownloads;
 
-    @Option(names = {"--timeout", "-t"}, description = "Build timeout per project in minutes", defaultValue = "2")
+    @Option(names = {"--timeout", "-t"}, description = "Build timeout per project in minutes", defaultValue = "5")
     private int timeoutMinutes;
 
     @Option(names = {"--buildThreads", "-j"}, description = "Number of concurrent builds (default: 1)", defaultValue = "1")
@@ -168,6 +170,7 @@ public class EcosystemBuild implements Callable<Integer> {
         String buildSubdir;      // Subdirectory to run Maven in
         String javaVersion;      // SDKMAN Java version (e.g., "21-tem")
         boolean useAddonsRepo;   // Enable Vaadin Directory repository
+        int timeoutMinutes;      // Per-project timeout (0 = use global default)
         List<String> extraMvnArgs = List.of();
         List<String> notifyUsers = List.of();  // GitHub usernames to mention in issues
         boolean ignored;
@@ -183,6 +186,7 @@ public class EcosystemBuild implements Callable<Integer> {
         String buildSubdir;
         String javaVersion;
         boolean useAddonsRepo;
+        int timeoutMinutes;      // Per-project timeout (0 = use global default)
         List<String> extraMvnArgs = List.of();
         List<String> notifyUsers = List.of();  // GitHub usernames to mention in issues
         boolean ignored;
@@ -310,7 +314,8 @@ public class EcosystemBuild implements Callable<Integer> {
         // Collect all projects to build
         record BuildTask(String name, String repoUrl, String branch, String buildSubdir,
                          String javaVersion, boolean useAddonsRepo, List<String> extraMvnArgs,
-                         List<String> notifyUsers, ProjectType type, boolean ignored, String ignoreReason) {}
+                         List<String> notifyUsers, ProjectType type, boolean ignored, String ignoreReason,
+                         int timeoutMinutes) {}
 
         List<BuildTask> allTasks = new ArrayList<>();
         for (AddonProject addon : addonsToTest) {
@@ -324,7 +329,7 @@ public class EcosystemBuild implements Callable<Integer> {
 
             allTasks.add(new BuildTask(addon.name, addon.repoUrl, branch, addon.buildSubdir,
                     javaVersion, addon.useAddonsRepo, extraMvnArgs, addon.notifyUsers,
-                    ProjectType.ADDON, ignored, ignoreReason));
+                    ProjectType.ADDON, ignored, ignoreReason, addon.timeoutMinutes));
         }
         for (AppProject app : appsToTest) {
             // Apply version-specific overrides if any
@@ -337,7 +342,7 @@ public class EcosystemBuild implements Callable<Integer> {
 
             allTasks.add(new BuildTask(app.name, app.repoUrl, branch, app.buildSubdir,
                     javaVersion, app.useAddonsRepo, extraMvnArgs, app.notifyUsers,
-                    ProjectType.APP, ignored, ignoreReason));
+                    ProjectType.APP, ignored, ignoreReason, app.timeoutMinutes));
         }
 
         if (buildThreads == 1) {
@@ -356,7 +361,8 @@ public class EcosystemBuild implements Callable<Integer> {
                 System.out.println();
 
                 TestResult result = testProject(task.name, task.repoUrl, task.branch, task.buildSubdir,
-                        task.javaVersion, task.useAddonsRepo, task.extraMvnArgs, task.type, workPath);
+                        task.javaVersion, task.useAddonsRepo, task.extraMvnArgs, task.type, workPath,
+                        false, task.timeoutMinutes);
                 results.add(result);
 
                 durationMap.put(task.name, result.durationMs());
@@ -453,7 +459,8 @@ public class EcosystemBuild implements Callable<Integer> {
                     }
 
                     TestResult result = testProject(task.name, task.repoUrl, task.branch, task.buildSubdir,
-                            task.javaVersion, task.useAddonsRepo, task.extraMvnArgs, task.type, finalWorkPath, true);
+                            task.javaVersion, task.useAddonsRepo, task.extraMvnArgs, task.type, finalWorkPath,
+                            true, task.timeoutMinutes);
 
                     // For failures, verify if project builds with its original Vaadin version
                     FailureMetadata metadata = null;
@@ -794,13 +801,8 @@ public class EcosystemBuild implements Callable<Integer> {
 
     private TestResult testProject(String name, String repoUrl, String branch, String buildSubdir,
                                     String javaVersion, boolean useAddonsRepo, List<String> extraMvnArgs,
-                                    ProjectType type, Path workPath) {
-        return testProject(name, repoUrl, branch, buildSubdir, javaVersion, useAddonsRepo, extraMvnArgs, type, workPath, false);
-    }
-
-    private TestResult testProject(String name, String repoUrl, String branch, String buildSubdir,
-                                    String javaVersion, boolean useAddonsRepo, List<String> extraMvnArgs,
-                                    ProjectType type, Path workPath, boolean silent) {
+                                    ProjectType type, Path workPath, boolean silent, int projectTimeoutMinutes) {
+        int effectiveTimeout = projectTimeoutMinutes > 0 ? projectTimeoutMinutes : timeoutMinutes;
         long startTime = System.currentTimeMillis();
         Path projectPath = workPath.resolve(name);
         Path logFile = versionOutputPath.resolve(name + "-build.log");
@@ -885,13 +887,13 @@ public class EcosystemBuild implements Callable<Integer> {
 
             // Use silent build for concurrent execution (output goes to log file, displayed via printLogTail)
             int buildResult = silent
-                    ? runMavenSilent(buildPath, logFile, javaVersion, mvnArgs)
-                    : runMavenWithTail(buildPath, logFile, javaVersion, mvnArgs);
+                    ? runMavenSilent(buildPath, logFile, javaVersion, mvnArgs, effectiveTimeout)
+                    : runMavenWithTail(buildPath, logFile, javaVersion, mvnArgs, effectiveTimeout);
 
             if (buildResult == 0) {
                 return new TestResult(name, type, true, "Build successful", elapsed(startTime), logFile);
             } else if (buildResult == -1) {
-                return new TestResult(name, type, false, "Build timed out after " + timeoutMinutes + " min", elapsed(startTime), logFile);
+                return new TestResult(name, type, false, "Build timed out after " + effectiveTimeout + " min", elapsed(startTime), logFile);
             } else {
                 return new TestResult(name, type, false, "Build failed (exit code: " + buildResult + ")", elapsed(startTime), logFile);
             }
@@ -1027,25 +1029,24 @@ public class EcosystemBuild implements Callable<Integer> {
     }
 
     private int runCommandSilent(Path workDir, Path logFile, String... command) throws IOException, InterruptedException {
+        return runCommandSilent(workDir, logFile, timeoutMinutes, command);
+    }
+
+    private int runCommandSilent(Path workDir, Path logFile, int timeout, String... command) throws IOException, InterruptedException {
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(workDir.toFile());
         pb.redirectErrorStream(true);
 
         Process process = pb.start();
 
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-             BufferedWriter writer = Files.newBufferedWriter(logFile, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                writer.write(line);
-                writer.newLine();
-            }
-        }
-
-        return process.waitFor();
+        return readOutputWithTimeout(process, logFile, timeout);
     }
 
     private int runMavenSilent(Path workDir, Path logFile, String javaVersion, List<String> mvnArgs) throws IOException, InterruptedException {
+        return runMavenSilent(workDir, logFile, javaVersion, mvnArgs, timeoutMinutes);
+    }
+
+    private int runMavenSilent(Path workDir, Path logFile, String javaVersion, List<String> mvnArgs, int timeout) throws IOException, InterruptedException {
         String mvnCommand = "mvn " + String.join(" ", mvnArgs);
 
         List<String> command;
@@ -1068,19 +1069,10 @@ public class EcosystemBuild implements Callable<Integer> {
 
         Process process = pb.start();
 
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-             BufferedWriter writer = Files.newBufferedWriter(logFile, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                writer.write(line);
-                writer.newLine();
-            }
-        }
-
-        return process.waitFor();
+        return readOutputWithTimeout(process, logFile, timeout);
     }
 
-    private int runMavenWithTail(Path workDir, Path logFile, String javaVersion, List<String> mvnArgs) throws IOException, InterruptedException {
+    private int runMavenWithTail(Path workDir, Path logFile, String javaVersion, List<String> mvnArgs, int timeout) throws IOException, InterruptedException {
         String mvnCommand = "mvn " + String.join(" ", mvnArgs);
 
         List<String> command;
@@ -1104,6 +1096,21 @@ public class EcosystemBuild implements Callable<Integer> {
         pb.redirectInput(ProcessBuilder.Redirect.from(new File("/dev/null")));
 
         Process process = pb.start();
+
+        // Timeout watchdog - destroys process if it exceeds the time limit
+        AtomicBoolean timedOut = new AtomicBoolean(false);
+        Thread watchdog = new Thread(() -> {
+            try {
+                if (!process.waitFor(timeout, TimeUnit.MINUTES)) {
+                    timedOut.set(true);
+                    process.destroyForcibly();
+                }
+            } catch (InterruptedException e) {
+                // Watchdog interrupted = process finished before timeout
+            }
+        });
+        watchdog.setDaemon(true);
+        watchdog.start();
 
         LinkedList<String> tailBuffer = new LinkedList<>();
         int displayedLines = 0;
@@ -1135,16 +1142,61 @@ public class EcosystemBuild implements Callable<Integer> {
                     displayedLines++;
                 }
             }
+        } catch (IOException e) {
+            if (!timedOut.get()) throw e;
+            // Swallow IOException caused by process being destroyed on timeout
         }
+
+        watchdog.interrupt();
 
         // Clear tail after build completes
         clearTailLines(displayedLines);
         lastOutputLines = countOutputLines();
 
-        boolean completed = process.waitFor(timeoutMinutes, TimeUnit.MINUTES);
-        if (!completed) {
-            process.destroyForcibly();
-            System.out.println(RED + "⏱️  Build timed out after " + timeoutMinutes + " minutes" + RESET);
+        process.waitFor(); // Ensure process is fully terminated
+        if (timedOut.get()) {
+            System.out.println(RED + "⏱️  Build timed out after " + timeout + " minutes" + RESET);
+            return -1; // Timeout exit code
+        }
+        return process.exitValue();
+    }
+
+    /**
+     * Reads process output to a log file with a timeout watchdog.
+     * The watchdog destroys the process if it exceeds the timeout,
+     * which closes the stream and unblocks the readLine loop.
+     */
+    private int readOutputWithTimeout(Process process, Path logFile, int timeout) throws IOException, InterruptedException {
+        AtomicBoolean timedOut = new AtomicBoolean(false);
+        Thread watchdog = new Thread(() -> {
+            try {
+                if (!process.waitFor(timeout, TimeUnit.MINUTES)) {
+                    timedOut.set(true);
+                    process.destroyForcibly();
+                }
+            } catch (InterruptedException e) {
+                // Watchdog interrupted = process finished before timeout
+            }
+        });
+        watchdog.setDaemon(true);
+        watchdog.start();
+
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+             BufferedWriter writer = Files.newBufferedWriter(logFile, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                writer.write(line);
+                writer.newLine();
+            }
+        } catch (IOException e) {
+            if (!timedOut.get()) throw e;
+            // Swallow IOException caused by process being destroyed on timeout
+        }
+
+        watchdog.interrupt();
+        process.waitFor(); // Ensure process is fully terminated
+
+        if (timedOut.get()) {
             return -1; // Timeout exit code
         }
         return process.exitValue();
