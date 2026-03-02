@@ -209,6 +209,7 @@ public class EcosystemBuild implements Callable<Integer> {
     private final Map<String, Long> buildStartTimeMap = new HashMap<>();
     private final Map<String, String> knownIssueUrls = new HashMap<>();  // Project -> GitHub issue URL
     private final Map<String, FailureMetadata> failureMetadata = new HashMap<>();  // Project -> failure context
+    private final Set<String> flakyProjects = new HashSet<>();  // Projects that alternate between pass and fail
     private int lastOutputLines = 0;
 
     @Override
@@ -571,6 +572,9 @@ public class EcosystemBuild implements Callable<Integer> {
             }
             System.out.println();
         }
+
+        // Detect flaky projects from build archives
+        detectFlakyProjects(Path.of(workDir));
 
         // Print final summary
         long totalTimeMs = System.currentTimeMillis() - buildStartTime;
@@ -1191,6 +1195,53 @@ public class EcosystemBuild implements Callable<Integer> {
         return FALLBACK_VERSION;
     }
 
+    /**
+     * Detect flaky projects by scanning build archives for alternating pass/fail patterns.
+     * A currently-failing project is flaky if it passed in any of the recent archived builds.
+     */
+    private void detectFlakyProjects(Path workPath) {
+        Path archivesDir = workPath.resolve(vaadinVersion + "-archives");
+        if (!Files.exists(archivesDir)) return;
+
+        // Get currently failing projects
+        Set<String> currentlyFailing = new HashSet<>();
+        for (var entry : statusMap.entrySet()) {
+            if (entry.getValue() == BuildStatus.FAILED || entry.getValue() == BuildStatus.KNOWN_ISSUE) {
+                currentlyFailing.add(entry.getKey());
+            }
+        }
+        if (currentlyFailing.isEmpty()) return;
+
+        try (var dirs = Files.list(archivesDir)) {
+            List<Path> archiveDirs = dirs
+                    .filter(Files::isDirectory)
+                    .sorted(Comparator.comparing(Path::getFileName).reversed()) // newest first
+                    .toList();
+
+            for (Path dir : archiveDirs) {
+                Path failedFile = dir.resolve("failed-projects.txt");
+                Set<String> archivedFailures = new HashSet<>();
+                if (Files.exists(failedFile)) {
+                    List<String> lines = Files.readAllLines(failedFile);
+                    // Skip first line (vaadin_version=...)
+                    lines.stream().skip(1).filter(l -> !l.isBlank()).forEach(archivedFailures::add);
+                }
+                // Projects that are currently failing but were NOT failing in this archive = flaky
+                for (String project : currentlyFailing) {
+                    if (!archivedFailures.contains(project)) {
+                        flakyProjects.add(project);
+                    }
+                }
+            }
+        } catch (IOException e) {
+            System.err.println("Warning: Could not scan archives for flaky detection: " + e.getMessage());
+        }
+
+        if (!flakyProjects.isEmpty()) {
+            System.out.println("🔄 Flaky projects detected: " + String.join(", ", flakyProjects));
+        }
+    }
+
     private void archivePreviousLogs(Path workPath, String version) throws IOException {
         Path versionDir = workPath.resolve(version);
         if (!Files.exists(versionDir)) return;
@@ -1379,6 +1430,8 @@ public class EcosystemBuild implements Callable<Integer> {
                 } else {
                     statusEmoji = "⚠️ KNOWN ISSUE";
                 }
+            } else if (flakyProjects.contains(result.projectName())) {
+                statusEmoji = "🔄 FLAKY";
             } else {
                 statusEmoji = "❌ FAILED";
             }

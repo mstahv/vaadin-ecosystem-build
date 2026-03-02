@@ -154,25 +154,47 @@ jobs:
               console.log('Could not read failure-metadata.json:', e.message);
             }
 
-            // Get existing open issues
+            // Get existing issues (both open and closed) for flaky detection
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              state: 'open',
-              labels: 'build-failure'
+              state: 'all',
+              labels: 'build-failure',
+              per_page: 100
             });
 
             // Create an issue for each failed project
             for (const project of failedProjects) {
               const title = `Build failing: ${project} against Vaadin ${version}`;
 
-              // Check if issue already exists
+              // Check for any existing issue (open or closed) matching project+version
               const existingIssue = issues.data.find(i =>
                 i.title.includes(project) && i.title.includes(version)
               );
 
-              if (existingIssue) {
-                console.log(`Issue already exists for ${project}: #${existingIssue.number}`);
+              if (existingIssue && existingIssue.state === 'open') {
+                console.log(`Issue already open for ${project}: #${existingIssue.number}`);
+                continue;
+              }
+
+              if (existingIssue && existingIssue.state === 'closed') {
+                // Reopen the closed issue and mark as flaky
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existingIssue.number,
+                  state: 'open',
+                  labels: [...new Set([...existingIssue.labels.map(l => l.name), 'flaky'])]
+                });
+
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existingIssue.number,
+                  body: `Flaky build detected: **${project}** is failing again against Vaadin ${version}.`
+                });
+
+                console.log(`Reopened flaky issue #${existingIssue.number} for ${project}`);
                 continue;
               }
 
@@ -309,27 +331,85 @@ jobs:
                 continue;
               }
 
-              // Project is now passing, close the issue
-              const closeMessage = isOlderPatch
-                ? `✅ **${project}** now builds successfully against Vaadin ${version} (supersedes ${issueVersion}).`
-                : `✅ **${project}** now builds successfully against Vaadin ${version}.`;
+              // Check if this is a flaky issue
+              const isFlaky = issue.labels.some(l => l.name === 'flaky');
 
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                body: `${closeMessage}\n\n**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
-              });
+              if (isFlaky && isCurrentVersion) {
+                // Count consecutive passes from build archives
+                const archivesDir = `work/${version}-archives`;
+                let consecutivePasses = 0;
+                try {
+                  const archiveDirs = fs.readdirSync(archivesDir)
+                    .filter(d => fs.statSync(`${archivesDir}/${d}`).isDirectory())
+                    .sort()
+                    .reverse(); // newest first
 
-              await github.rest.issues.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                state: 'closed',
-                state_reason: 'completed'
-              });
+                  for (const dir of archiveDirs) {
+                    const failedFile = `${archivesDir}/${dir}/failed-projects.txt`;
+                    if (!fs.existsSync(failedFile)) {
+                      // No failed-projects.txt means all passed in that run
+                      consecutivePasses++;
+                      continue;
+                    }
+                    const archiveContent = fs.readFileSync(failedFile, 'utf8');
+                    const archiveFailedProjects = archiveContent.trim().split('\n').slice(1).filter(l => l.trim());
+                    if (archiveFailedProjects.includes(project)) {
+                      break; // Found a failure, stop counting
+                    }
+                    consecutivePasses++;
+                  }
+                } catch (e) {
+                  console.log(`Could not read archives for ${version}: ${e.message}`);
+                }
 
-              console.log(`Closed issue #${issue.number}: ${issue.title}`);
+                // Current build also passes, count it
+                consecutivePasses++;
+
+                if (consecutivePasses < 5) {
+                  console.log(`Flaky issue #${issue.number} for ${project}: ${consecutivePasses}/5 consecutive passes, keeping open`);
+                  continue;
+                }
+
+                // 5+ consecutive passes — resolve the flaky issue
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `Flaky build resolved: **${project}** has passed 5 consecutive builds against Vaadin ${version}.\n\n**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+                });
+
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  state: 'closed',
+                  state_reason: 'completed'
+                });
+
+                console.log(`Closed flaky issue #${issue.number} after 5 consecutive passes: ${issue.title}`);
+              } else {
+                // Non-flaky issue (or older patch version): close immediately as before
+                const closeMessage = isOlderPatch
+                  ? `✅ **${project}** now builds successfully against Vaadin ${version} (supersedes ${issueVersion}).`
+                  : `✅ **${project}** now builds successfully against Vaadin ${version}.`;
+
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `${closeMessage}\n\n**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+                });
+
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  state: 'closed',
+                  state_reason: 'completed'
+                });
+
+                console.log(`Closed issue #${issue.number}: ${issue.title}`);
+              }
             }
 
       - name: Fail if tests failed
