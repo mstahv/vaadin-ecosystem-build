@@ -140,6 +140,31 @@ jobs:
             const version = process.env.ACTUAL_VERSION || 'unknown';
             const buildType = process.env.BUILD_TYPE;
 
+            // Helper: compute version series (e.g. "25.0.x") for grouping issues
+            // SNAPSHOTs stay as-is since they run on different schedules
+            function getVersionSeries(v) {
+              const snapMatch = v.match(/^(\d+\.\d+)-SNAPSHOT$/);
+              if (snapMatch) return { series: v, majorMinor: snapMatch[1], isSnapshot: true };
+              // Match stable (25.0.6) and pre-release (25.1.0-beta1, 25.1.0.alpha3)
+              const m = v.match(/^(\d+)\.(\d+)\./);
+              if (m) return { series: `${m[1]}.${m[2]}.x`, majorMinor: `${m[1]}.${m[2]}`, isSnapshot: false };
+              return { series: v, majorMinor: v, isSnapshot: false };
+            }
+
+            // Helper: check if an issue title matches a project and version series
+            // Supports both new format ("against Vaadin 25.0.x") and old format ("against Vaadin 25.0.6")
+            function issueMatchesProjectAndSeries(title, project, series) {
+              const m = title.match(/Build failing: (.+) against Vaadin (.+)$/);
+              if (!m) return false;
+              if (m[1] !== project) return false;
+              const titleVersion = m[2];
+              if (titleVersion === series) return true;
+              // Old-format title: compute its series and compare
+              return getVersionSeries(titleVersion).series === series;
+            }
+
+            const { series, majorMinor, isSnapshot } = getVersionSeries(version);
+
             // Read failed projects from file
             let failedProjects = [];
             try {
@@ -175,17 +200,51 @@ jobs:
               per_page: 100
             });
 
+            // For SNAPSHOTs, use exact version in title (unchanged behavior)
+            // For releases/pre-releases, use series format
+            const issueTitle = isSnapshot
+              ? (project) => `Build failing: ${project} against Vaadin ${version}`
+              : (project) => `Build failing: ${project} against Vaadin ${series}`;
+
             // Create an issue for each failed project
             for (const project of failedProjects) {
-              const title = `Build failing: ${project} against Vaadin ${version}`;
+              const title = issueTitle(project);
 
-              // Check for any existing issue (open or closed) matching project+version
-              const existingIssue = issues.data.find(i =>
-                i.title.includes(project) && i.title.includes(version)
-              );
+              // Check for any existing issue (open or closed) matching project+series
+              const existingIssue = isSnapshot
+                ? issues.data.find(i => i.title.includes(project) && i.title.includes(version))
+                : issues.data.find(i => issueMatchesProjectAndSeries(i.title, project, series));
 
               if (existingIssue && existingIssue.state === 'open') {
                 console.log(`Issue already open for ${project}: #${existingIssue.number}`);
+
+                // For non-SNAPSHOT: add "Still failing" comment if exact version changed
+                if (!isSnapshot) {
+                  const bodyMatch = existingIssue.body?.match(/\*\*(?:Last tested version|First seen in):\*\* (.+)/);
+                  const lastKnownVersion = bodyMatch ? bodyMatch[1] : null;
+                  if (lastKnownVersion && lastKnownVersion !== version) {
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: existingIssue.number,
+                      body: `Still failing in Vaadin ${version}.\n\n**Build Log:** [${project}-build.log](https://ecosystembuild.parttio.org/logs/${version}/${project}-build.log)`
+                    });
+                    // Update body with last tested version
+                    let updatedBody = existingIssue.body;
+                    if (updatedBody.includes('**Last tested version:**')) {
+                      updatedBody = updatedBody.replace(/\*\*Last tested version:\*\* .+/, `**Last tested version:** ${version}`);
+                    } else {
+                      updatedBody = updatedBody.replace(/((?:\*\*First seen in:\*\* .+))/, `$1\n**Last tested version:** ${version}`);
+                    }
+                    await github.rest.issues.update({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: existingIssue.number,
+                      body: updatedBody
+                    });
+                    console.log(`Added "Still failing in ${version}" comment to #${existingIssue.number}`);
+                  }
+                }
                 continue;
               }
 
@@ -206,6 +265,16 @@ jobs:
                   body: `Flaky build detected: **${project}** is failing again against Vaadin ${version}.`
                 });
 
+                // Update title to new series format if it was old-format
+                if (existingIssue.title !== title) {
+                  await github.rest.issues.update({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: existingIssue.number,
+                    title: title
+                  });
+                }
+
                 console.log(`Reopened flaky issue #${existingIssue.number} for ${project}`);
                 continue;
               }
@@ -214,11 +283,14 @@ jobs:
               const metadata = failureMetadata[project];
               const projectUrl = metadata?.repoUrl || null;
               const projectLink = projectUrl ? `[${project}](${projectUrl})` : project;
+              const versionLine = isSnapshot
+                ? `**Vaadin Version:** ${version}`
+                : `**First seen in:** ${version}`;
               const bodyParts = [
-                `The **${projectLink}** build is failing against Vaadin ${version}.`,
+                `The **${projectLink}** build is failing against Vaadin ${isSnapshot ? version : series}.`,
                 '',
                 `**Project:** ${projectLink}`,
-                `**Vaadin Version:** ${version}`,
+                versionLine,
                 `**Build Type:** ${buildType}`,
                 `**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
                 `**Build Log:** [${project}-build.log](https://ecosystembuild.parttio.org/logs/${version}/${project}-build.log)`,
@@ -260,8 +332,8 @@ jobs:
 
               const body = bodyParts.join('\n');
 
-              // Create version label (e.g., "vaadin-25.0-SNAPSHOT")
-              const versionLabel = `vaadin-${version}`;
+              // Create version label: "vaadin-25.0" for releases, "vaadin-25.0-SNAPSHOT" for snapshots
+              const versionLabel = isSnapshot ? `vaadin-${version}` : `vaadin-${majorMinor}`;
 
               await github.rest.issues.create({
                 owner: context.repo.owner,
@@ -284,6 +356,17 @@ jobs:
             const fs = require('fs');
             const version = process.env.ACTUAL_VERSION || 'unknown';
 
+            // Helper: compute version series (e.g. "25.0.x") for grouping issues
+            function getVersionSeries(v) {
+              const snapMatch = v.match(/^(\d+\.\d+)-SNAPSHOT$/);
+              if (snapMatch) return { series: v, majorMinor: snapMatch[1], isSnapshot: true };
+              const m = v.match(/^(\d+)\.(\d+)\./);
+              if (m) return { series: `${m[1]}.${m[2]}.x`, majorMinor: `${m[1]}.${m[2]}`, isSnapshot: false };
+              return { series: v, majorMinor: v, isSnapshot: false };
+            }
+
+            const { series, isSnapshot } = getVersionSeries(version);
+
             // Read failed projects to know which ones are still failing
             let failedProjects = [];
             try {
@@ -302,14 +385,6 @@ jobs:
               labels: 'build-failure'
             });
 
-            // Helper: parse "major.minor.patch" from a version string, returns null for snapshots
-            function parseStableVersion(v) {
-              const m = v.match(/^(\d+)\.(\d+)\.(\d+)$/);
-              return m ? { major: parseInt(m[1]), minor: parseInt(m[2]), patch: parseInt(m[3]) } : null;
-            }
-
-            const currentParsed = parseStableVersion(version);
-
             // Close issues for projects that are now passing
             for (const issue of issues.data) {
               const match = issue.title.match(/Build failing: (.+) against Vaadin (.+)$/);
@@ -318,36 +393,28 @@ jobs:
               const project = match[1];
               const issueVersion = match[2];
 
-              // Check if this issue is for the current version
-              let isCurrentVersion = issueVersion === version;
+              // Check if this issue belongs to the current version series
+              const issueSeries = getVersionSeries(issueVersion);
 
-              // For stable releases, also match older patch versions in the same minor series
-              // e.g. when testing 25.0.6, also close issues for 25.0.5, 25.0.4, etc.
-              let isOlderPatch = false;
-              if (!isCurrentVersion && currentParsed) {
-                const issueParsed = parseStableVersion(issueVersion);
-                if (issueParsed
-                    && issueParsed.major === currentParsed.major
-                    && issueParsed.minor === currentParsed.minor
-                    && issueParsed.patch < currentParsed.patch) {
-                  isOlderPatch = true;
-                }
-              }
+              // For SNAPSHOTs: exact match only. For releases: match by series.
+              const isMatchingIssue = isSnapshot
+                ? issueVersion === version
+                : issueSeries.series === series;
 
-              if (!isCurrentVersion && !isOlderPatch) continue;
+              if (!isMatchingIssue) continue;
 
               // If project is still failing, don't close
               if (failedProjects.includes(project)) {
-                if (isCurrentVersion) {
-                  console.log(`${project} still failing, keeping issue #${issue.number} open`);
-                }
+                console.log(`${project} still failing, keeping issue #${issue.number} open`);
                 continue;
               }
 
               // Check if this is a flaky issue
               const isFlaky = issue.labels.some(l => l.name === 'flaky');
 
-              if (isFlaky && isCurrentVersion) {
+              // Flaky 5-pass rule only applies to SNAPSHOTs
+              // (non-SNAPSHOTs close immediately since version changes reset the context)
+              if (isFlaky && isSnapshot) {
                 // Count consecutive passes from build archives
                 const archivesDir = `work/${version}-archives`;
                 let consecutivePasses = 0;
@@ -401,10 +468,17 @@ jobs:
 
                 console.log(`Closed flaky issue #${issue.number} after 5 consecutive passes: ${issue.title}`);
               } else {
-                // Non-flaky issue (or older patch version): close immediately as before
-                const closeMessage = isOlderPatch
-                  ? `✅ **${project}** now builds successfully against Vaadin ${version} (supersedes ${issueVersion}).`
-                  : `✅ **${project}** now builds successfully against Vaadin ${version}.`;
+                // Non-flaky or non-SNAPSHOT: close immediately
+                // Detect old-format titles (exact version instead of series)
+                const isOldFormat = !isSnapshot && issueVersion !== series;
+                let closeMessage;
+                if (isSnapshot) {
+                  closeMessage = `✅ **${project}** now builds successfully against Vaadin ${version}.`;
+                } else if (isOldFormat) {
+                  closeMessage = `✅ **${project}** — fixed as of Vaadin ${version} (issue was for ${issueVersion}).`;
+                } else {
+                  closeMessage = `✅ **${project}** — fixed as of Vaadin ${version}.`;
+                }
 
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
