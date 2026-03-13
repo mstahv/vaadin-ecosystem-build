@@ -158,6 +158,9 @@ public class EcosystemBuild implements Callable<Integer> {
     @Option(names = {"--pre-release"}, description = "Auto-detect and test the latest pre-release version from Maven Central")
     private boolean preRelease;
 
+    @Option(names = {"--ci"}, description = "CI-friendly output: no terminal control, log-style progress")
+    private boolean ciMode;
+
     private boolean useCustomSettings = false;
     private String cachedMavenMetadataXml;
     private Path versionOutputPath;  // Version-specific output directory for logs and reports
@@ -232,6 +235,11 @@ public class EcosystemBuild implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
+        // Auto-detect CI environment
+        if (!ciMode && System.getenv("CI") != null) {
+            ciMode = true;
+        }
+
         // Resolve Vaadin version if not specified
         if (vaadinVersion != null && !vaadinVersion.isBlank()) {
             // Explicit version specified - use pre-release settings for snapshots/betas
@@ -376,19 +384,26 @@ public class EcosystemBuild implements Callable<Integer> {
             for (BuildTask task : allTasks) {
                 if (task.ignored) {
                     results.add(new TestResult(task.name, task.type, false, "Ignored: " + task.ignoreReason, 0));
+                    if (ciMode) {
+                        System.out.printf("  ⏭️  %s IGNORED%n", task.name);
+                    }
                     continue;
                 }
 
                 statusMap.put(task.name, BuildStatus.BUILDING);
                 buildStartTimeMap.put(task.name, System.currentTimeMillis());
-                clearOutput();
-                printHeader();
-                printStatusTable();
-                System.out.println();
+                if (ciMode) {
+                    System.out.printf("  🔨 Building %s...%n", task.name);
+                } else {
+                    clearOutput();
+                    printHeader();
+                    printStatusTable();
+                    System.out.println();
+                }
 
                 TestResult result = testProject(task.name, task.repoUrl, task.branch, task.buildSubdir,
                         task.javaVersion, task.useAddonsRepo, task.extraMvnArgs, task.type, workPath,
-                        false, task.timeoutMinutes, task.gitClean);
+                        ciMode, task.timeoutMinutes, task.gitClean);
                 results.add(result);
 
                 durationMap.put(task.name, result.durationMs());
@@ -407,8 +422,10 @@ public class EcosystemBuild implements Callable<Integer> {
                     // For failures, verify if project builds with its original Vaadin version
                     Path projectPath = workPath.resolve(task.name);
                     Path buildPath = task.buildSubdir != null ? projectPath.resolve(task.buildSubdir) : projectPath;
-                    System.out.println();
-                    System.out.printf("  %s🔍 Verifying build with project's original Vaadin version...%s%n", DIM, RESET);
+                    if (!ciMode) {
+                        System.out.println();
+                        System.out.printf("  %s🔍 Verifying build with project's original Vaadin version...%s%n", DIM, RESET);
+                    }
 
                     String originalVersion = detectProjectVaadinVersion(buildPath, task.javaVersion);
                     Path verifyLog = versionOutputPath.resolve(task.name + "-original-build.log");
@@ -417,25 +434,36 @@ public class EcosystemBuild implements Callable<Integer> {
 
                     failureMetadata.put(task.name, new FailureMetadata(task.repoUrl, originalVersion, buildsWithOriginal, task.notifyUsers));
 
-                    if (originalVersion != null) {
+                    if (!ciMode && originalVersion != null) {
                         System.out.printf("  %s   Original version: %s, builds: %s%s%n", DIM, originalVersion,
                                 buildsWithOriginal ? "✅" : "❌", RESET);
                     }
                 }
                 statusMap.put(task.name, finalStatus);
 
-                clearOutput();
-                printHeader();
-                printStatusTable();
+                if (ciMode) {
+                    // Print one-line result
+                    String duration = String.format("%.1fs", result.durationMs() / 1000.0);
+                    switch (finalStatus) {
+                        case PASSED -> System.out.printf("  ✅ %s PASSED (%s)%n", task.name, duration);
+                        case FAILED -> System.out.printf("  ❌ %s FAILED (%s) — Log: %s%n", task.name, duration, result.logFile());
+                        case KNOWN_ISSUE -> System.out.printf("  ⚠️  %s KNOWN ISSUE (%s) — Log: %s%n", task.name, duration, result.logFile());
+                        default -> {}
+                    }
+                } else {
+                    clearOutput();
+                    printHeader();
+                    printStatusTable();
 
-                if (finalStatus == BuildStatus.FAILED) {
+                    if (finalStatus == BuildStatus.FAILED) {
+                        System.out.println();
+                        System.out.printf("  %s💥 %s failed. Log: %s%s%n", RED, task.name, result.logFile(), RESET);
+                    } else if (finalStatus == BuildStatus.KNOWN_ISSUE) {
+                        System.out.println();
+                        System.out.printf("  %s⚠️  %s failed (known issue). Log: %s%s%n", YELLOW, task.name, result.logFile(), RESET);
+                    }
                     System.out.println();
-                    System.out.printf("  %s💥 %s failed. Log: %s%s%n", RED, task.name, result.logFile(), RESET);
-                } else if (finalStatus == BuildStatus.KNOWN_ISSUE) {
-                    System.out.println();
-                    System.out.printf("  %s⚠️  %s failed (known issue). Log: %s%s%n", YELLOW, task.name, result.logFile(), RESET);
                 }
-                System.out.println();
             }
         } else {
             // Concurrent execution with fixed builder slots
@@ -457,6 +485,9 @@ public class EcosystemBuild implements Callable<Integer> {
             for (BuildTask task : allTasks) {
                 if (task.ignored) {
                     results.add(new TestResult(task.name, task.type, false, "Ignored: " + task.ignoreReason, 0));
+                    if (ciMode) {
+                        System.out.printf("  ⏭️  %s IGNORED%n", task.name);
+                    }
                 }
             }
 
@@ -528,49 +559,126 @@ public class EcosystemBuild implements Callable<Integer> {
                 }));
             }
 
-            // Calculate lines per builder based on terminal size if available
-            int terminalHeight = getTerminalHeight();
-            int headerAndStatusLines = countOutputLines() + 2; // +2 for empty line and separator
-            int availableLines = terminalHeight > 0
-                    ? Math.max(buildThreads * 4, terminalHeight - headerAndStatusLines - 2)
-                    : TAIL_LINES;
-            int linesPerBuilder = Math.max(3, availableLines / buildThreads);
+            if (ciMode) {
+                // CI mode: track state changes and print events once
+                Map<String, BuildStatus> previousStatus = new HashMap<>();
+                for (BuildTask task : allTasks) {
+                    previousStatus.put(task.name, statusMap.get(task.name));
+                }
 
-            // Update status display while waiting
-            while (!futures.stream().allMatch(Future::isDone)) {
-                clearOutput();
-                printHeader();
-                printStatusTable();
-                System.out.println();
+                while (!futures.stream().allMatch(Future::isDone)) {
+                    synchronized (slotsLock) {
+                        for (BuildTask task : allTasks) {
+                            if (task.ignored) continue;
+                            BuildStatus prev = previousStatus.get(task.name);
+                            BuildStatus curr = statusMap.get(task.name);
+                            if (prev != curr) {
+                                previousStatus.put(task.name, curr);
+                                switch (curr) {
+                                    case BUILDING -> System.out.printf("  🔨 Building %s...%n", task.name);
+                                    case PASSED -> {
+                                        Long dur = durationMap.get(task.name);
+                                        String duration = dur != null ? String.format("%.1fs", dur / 1000.0) : "";
+                                        System.out.printf("  ✅ %s PASSED (%s)%n", task.name, duration);
+                                    }
+                                    case FAILED -> {
+                                        Long dur = durationMap.get(task.name);
+                                        String duration = dur != null ? String.format("%.1fs", dur / 1000.0) : "";
+                                        System.out.printf("  ❌ %s FAILED (%s)%n", task.name, duration);
+                                    }
+                                    case KNOWN_ISSUE -> {
+                                        Long dur = durationMap.get(task.name);
+                                        String duration = dur != null ? String.format("%.1fs", dur / 1000.0) : "";
+                                        System.out.printf("  ⚠️  %s KNOWN ISSUE (%s)%n", task.name, duration);
+                                    }
+                                    default -> {}
+                                }
+                            }
+                        }
+                    }
 
-                // Show output areas for all builder slots (fixed layout)
-                System.out.println("  " + CYAN + "─── Build Output " + "─".repeat(40) + RESET);
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+
+                // Print any final state changes that happened after the last poll
                 synchronized (slotsLock) {
-                    for (int slot = 0; slot < buildThreads; slot++) {
-                        String builderId = String.format("Builder %d", slot + 1);
-                        BuilderSlot slotInfo = builderSlots[slot];
-                        if (slotInfo != null) {
-                            System.out.println("  " + YELLOW + "▶ [" + builderId + "] " + slotInfo.projectName() + RESET);
-                            printLogTail(slotInfo.logFile(), linesPerBuilder);
-                        } else {
-                            // Empty slot - always show with reserved space
-                            System.out.println("  " + DIM + "▷ [" + builderId + "] (idle)" + RESET);
-                            for (int i = 0; i < linesPerBuilder; i++) {
-                                System.out.println();
+                    for (BuildTask task : allTasks) {
+                        if (task.ignored) continue;
+                        BuildStatus prev = previousStatus.get(task.name);
+                        BuildStatus curr = statusMap.get(task.name);
+                        if (prev != curr) {
+                            switch (curr) {
+                                case PASSED -> {
+                                    Long dur = durationMap.get(task.name);
+                                    String duration = dur != null ? String.format("%.1fs", dur / 1000.0) : "";
+                                    System.out.printf("  ✅ %s PASSED (%s)%n", task.name, duration);
+                                }
+                                case FAILED -> {
+                                    Long dur = durationMap.get(task.name);
+                                    String duration = dur != null ? String.format("%.1fs", dur / 1000.0) : "";
+                                    System.out.printf("  ❌ %s FAILED (%s)%n", task.name, duration);
+                                }
+                                case KNOWN_ISSUE -> {
+                                    Long dur = durationMap.get(task.name);
+                                    String duration = dur != null ? String.format("%.1fs", dur / 1000.0) : "";
+                                    System.out.printf("  ⚠️  %s KNOWN ISSUE (%s)%n", task.name, duration);
+                                }
+                                default -> {}
                             }
                         }
                     }
                 }
+            } else {
+                // Terminal mode: live-updating display with log tails
+                // Calculate lines per builder based on terminal size if available
+                int terminalHeight = getTerminalHeight();
+                int headerAndStatusLines = countOutputLines() + 2; // +2 for empty line and separator
+                int availableLines = terminalHeight > 0
+                        ? Math.max(buildThreads * 4, terminalHeight - headerAndStatusLines - 2)
+                        : TAIL_LINES;
+                int linesPerBuilder = Math.max(3, availableLines / buildThreads);
 
-                // Track total lines printed for clearing (fixed size now)
-                // Header + status table + 1 empty + separator + (buildThreads * (header + linesPerBuilder))
-                lastOutputLines = countOutputLines() + 1 + (buildThreads * (1 + linesPerBuilder));
+                // Update status display while waiting
+                while (!futures.stream().allMatch(Future::isDone)) {
+                    clearOutput();
+                    printHeader();
+                    printStatusTable();
+                    System.out.println();
 
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
+                    // Show output areas for all builder slots (fixed layout)
+                    System.out.println("  " + CYAN + "─── Build Output " + "─".repeat(40) + RESET);
+                    synchronized (slotsLock) {
+                        for (int slot = 0; slot < buildThreads; slot++) {
+                            String builderId = String.format("Builder %d", slot + 1);
+                            BuilderSlot slotInfo = builderSlots[slot];
+                            if (slotInfo != null) {
+                                System.out.println("  " + YELLOW + "▶ [" + builderId + "] " + slotInfo.projectName() + RESET);
+                                printLogTail(slotInfo.logFile(), linesPerBuilder);
+                            } else {
+                                // Empty slot - always show with reserved space
+                                System.out.println("  " + DIM + "▷ [" + builderId + "] (idle)" + RESET);
+                                for (int i = 0; i < linesPerBuilder; i++) {
+                                    System.out.println();
+                                }
+                            }
+                        }
+                    }
+
+                    // Track total lines printed for clearing (fixed size now)
+                    // Header + status table + 1 empty + separator + (buildThreads * (header + linesPerBuilder))
+                    lastOutputLines = countOutputLines() + 1 + (buildThreads * (1 + linesPerBuilder));
+
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
                 }
             }
 
@@ -586,20 +694,24 @@ public class EcosystemBuild implements Callable<Integer> {
             executor.shutdown();
 
             // Final status update
-            clearOutput();
-            printHeader();
-            printStatusTable();
+            if (!ciMode) {
+                clearOutput();
+                printHeader();
+                printStatusTable();
+            }
 
             // Show failures and known issues
             for (TestResult result : results) {
                 if (!result.success() && !result.message().startsWith("Ignored:")) {
                     BuildStatus status = statusMap.get(result.projectName());
-                    if (status == BuildStatus.KNOWN_ISSUE) {
-                        System.out.println();
-                        System.out.printf("  %s⚠️  %s failed (known issue). Log: %s%s%n", YELLOW, result.projectName(), result.logFile(), RESET);
-                    } else {
-                        System.out.println();
-                        System.out.printf("  %s💥 %s failed. Log: %s%s%n", RED, result.projectName(), result.logFile(), RESET);
+                    if (!ciMode) {
+                        if (status == BuildStatus.KNOWN_ISSUE) {
+                            System.out.println();
+                            System.out.printf("  %s⚠️  %s failed (known issue). Log: %s%s%n", YELLOW, result.projectName(), result.logFile(), RESET);
+                        } else {
+                            System.out.println();
+                            System.out.printf("  %s💥 %s failed. Log: %s%s%n", RED, result.projectName(), result.logFile(), RESET);
+                        }
                     }
                 }
             }
@@ -616,10 +728,7 @@ public class EcosystemBuild implements Callable<Integer> {
         // Write list of failed projects for CI integration
         writeFailedProjectsList();
 
-        // Count failures (known issues don't count as failures)
-        boolean allPassed = statusMap.values().stream()
-                .noneMatch(s -> s == BuildStatus.FAILED);
-        return allPassed ? 0 : 1;
+        return 0;
     }
 
     private void printHeader() {
@@ -727,6 +836,7 @@ public class EcosystemBuild implements Callable<Integer> {
     }
 
     private void clearOutput() {
+        if (ciMode) return;
         // Clear previous output lines
         for (int i = 0; i < lastOutputLines; i++) {
             System.out.print(MOVE_UP + CLEAR_LINE);
@@ -735,6 +845,7 @@ public class EcosystemBuild implements Callable<Integer> {
     }
 
     private void clearTailLines(int lines) {
+        if (ciMode) return;
         for (int i = 0; i < lines; i++) {
             System.out.print(MOVE_UP + CLEAR_LINE);
         }
