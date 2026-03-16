@@ -99,79 +99,79 @@ public class EcosystemBuild implements Callable<Integer> {
             name = "Badge List Add-on";
             repoUrl = "https://github.com/FlowingCode/BadgeList";
             notifyUsers = List.of("javier-godoy", "mlopezFC", "paodb");
-            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig());
+            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
         }},
         new AddonProject() {{
             name = "Carousel Addon";
             repoUrl = "https://github.com/FlowingCode/CarouselAddon";
             notifyUsers = List.of("javier-godoy", "mlopezFC", "paodb");
-            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig());
+            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
         }},
         new AddonProject() {{
             name = "Chat Assistant Add-on";
             repoUrl = "https://github.com/FlowingCode/ChatAssistant";
             notifyUsers = List.of("javier-godoy", "mlopezFC", "paodb");
-            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig());
+            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
         }},
         new AddonProject() {{
             name = "Day of Week Selector Add-on";
             repoUrl = "https://github.com/FlowingCode/DayOfWeekSelectorAddon";
             notifyUsers = List.of("javier-godoy", "mlopezFC", "paodb");
-            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig());
+            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
         }},
         new AddonProject() {{
             name = "Error Window Add-on";
             repoUrl = "https://github.com/FlowingCode/ErrorWindowAddon";
             notifyUsers = List.of("javier-godoy", "mlopezFC", "paodb");
-            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig());
+            versionOverrides = Map.of("24.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv24"); }}, "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
         }},
         new AddonProject() {{
             name = "Extended Login Add-on";
             repoUrl = "https://github.com/FlowingCode/ExtendedLoginAddon";
             notifyUsers = List.of("javier-godoy", "mlopezFC", "paodb");
-            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig());
+            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
         }},
         new AddonProject() {{
             name = "FontAwesomeIronIconset Add-on";
             repoUrl = "https://github.com/FlowingCode/FontAwesomeIronIconset";
             notifyUsers = List.of("javier-godoy", "mlopezFC", "paodb");
-            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig());
+            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
         }},
         new AddonProject() {{
             name = "Google Maps Add-on";
             repoUrl = "https://github.com/FlowingCode/GoogleMapsAddon";
             notifyUsers = List.of("javier-godoy", "mlopezFC", "paodb");
-            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig());
+            versionOverrides = Map.of("24.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv24"); }}, "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
         }},
         new AddonProject() {{
             name = "Grid Exporter Add-on";
             repoUrl = "https://github.com/FlowingCode/GridExporterAddon";
             notifyUsers = List.of("javier-godoy", "mlopezFC", "paodb");
-            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig());
+            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
         }},
         new AddonProject() {{
             name = "Image Crop Add-on";
             repoUrl = "https://github.com/FlowingCode/ImageCrop";
             notifyUsers = List.of("javier-godoy", "mlopezFC", "paodb");
-            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig());
+            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
         }},
         new AddonProject() {{
             name = "Markdown Editor Add-on";
             repoUrl = "https://github.com/FlowingCode/MarkdownEditor";
             notifyUsers = List.of("javier-godoy", "mlopezFC", "paodb");
-            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig());
+            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
         }},
         new AddonProject() {{
             name = "TwinColGrid Add-on";
             repoUrl = "https://github.com/FlowingCode/TwinColGrid";
             notifyUsers = List.of("javier-godoy", "mlopezFC", "paodb");
-            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig());
+            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
         }},
         new AddonProject() {{
             name = "Year/Month Calendar Add-on";
             repoUrl = "https://github.com/FlowingCode/YearMonthCalendarAddon";
             notifyUsers = List.of("javier-godoy", "mlopezFC", "paodb");
-            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig());
+            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
         }}
     );
 
