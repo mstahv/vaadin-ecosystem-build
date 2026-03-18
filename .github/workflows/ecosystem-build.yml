@@ -227,7 +227,7 @@ jobs:
                       owner: context.repo.owner,
                       repo: context.repo.repo,
                       issue_number: existingIssue.number,
-                      body: `Still failing in Vaadin ${version}.\n\n**Build Log:** [${project}-build.log](https://ecosystembuild.parttio.org/logs/${version}/${project}-build.log)`
+                      body: `Still failing in Vaadin ${version}.\n\n**Build Log:** [${project}-build.log](https://ecosystembuild.parttio.org/logs/${version}/${encodeURIComponent(project)}-build.log)`
                     });
                     // Update body with last tested version
                     let updatedBody = existingIssue.body;
@@ -293,7 +293,7 @@ jobs:
                 versionLine,
                 `**Build Type:** ${buildType}`,
                 `**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-                `**Build Log:** [${project}-build.log](https://ecosystembuild.parttio.org/logs/${version}/${project}-build.log)`,
+                `**Build Log:** [${project}-build.log](https://ecosystembuild.parttio.org/logs/${version}/${encodeURIComponent(project)}-build.log)`,
               ];
 
               if (metadata) {
