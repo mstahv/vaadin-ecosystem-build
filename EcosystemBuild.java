@@ -168,7 +168,7 @@ public class EcosystemBuild implements Callable<Integer> {
             versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
         }},
         new AddonProject() {{
-            name = "Year/Month Calendar Add-on";
+            name = "Year-Month Calendar Add-on";
             repoUrl = "https://github.com/FlowingCode/YearMonthCalendarAddon";
             notifyUsers = List.of("javier-godoy", "mlopezFC", "paodb");
             versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ extraMvnArgs = List.of("-Pv25"); }});
