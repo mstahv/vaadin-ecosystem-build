@@ -247,6 +247,7 @@ public class EcosystemBuild implements Callable<Integer> {
         boolean ignored;         // Skip project for this version range
         String ignoreReason;     // Reason for skipping
         List<String> extraMvnArgs; // Override Maven args (null = use default)
+        String profile;            // Maven profile for this version range
     }
 
     // Project configuration
@@ -421,7 +422,7 @@ public class EcosystemBuild implements Callable<Integer> {
         record BuildTask(String name, String repoUrl, String branch, String buildSubdir,
                          String javaVersion, boolean useAddonsRepo, List<String> extraMvnArgs,
                          List<String> notifyUsers, ProjectType type, boolean ignored, String ignoreReason,
-                         int timeoutMinutes, boolean gitClean) {}
+                         int timeoutMinutes, boolean gitClean, String profileId) {}
 
         List<BuildTask> allTasks = new ArrayList<>();
         for (AddonProject addon : addonsToTest) {
@@ -432,10 +433,11 @@ public class EcosystemBuild implements Callable<Integer> {
             List<String> extraMvnArgs = (vc != null && vc.extraMvnArgs != null) ? vc.extraMvnArgs : addon.extraMvnArgs;
             boolean ignored = (vc != null && vc.ignored) || addon.ignored;
             String ignoreReason = (vc != null && vc.ignored) ? vc.ignoreReason : addon.ignoreReason;
+            String profileId = (vc != null) ? vc.profile : null;
 
             allTasks.add(new BuildTask(addon.name, addon.repoUrl, branch, addon.buildSubdir,
                     javaVersion, addon.useAddonsRepo, extraMvnArgs, addon.notifyUsers,
-                    ProjectType.ADDON, ignored, ignoreReason, addon.timeoutMinutes, addon.gitClean));
+                    ProjectType.ADDON, ignored, ignoreReason, addon.timeoutMinutes, addon.gitClean, profileId));
         }
         for (AppProject app : appsToTest) {
             // Apply version-specific overrides if any
@@ -445,10 +447,11 @@ public class EcosystemBuild implements Callable<Integer> {
             List<String> extraMvnArgs = (vc != null && vc.extraMvnArgs != null) ? vc.extraMvnArgs : app.extraMvnArgs;
             boolean ignored = (vc != null && vc.ignored) || app.ignored;
             String ignoreReason = (vc != null && vc.ignored) ? vc.ignoreReason : app.ignoreReason;
+            String profileId = (vc != null) ? vc.profile : null;
 
             allTasks.add(new BuildTask(app.name, app.repoUrl, branch, app.buildSubdir,
                     javaVersion, app.useAddonsRepo, extraMvnArgs, app.notifyUsers,
-                    ProjectType.APP, ignored, ignoreReason, app.timeoutMinutes, app.gitClean));
+                    ProjectType.APP, ignored, ignoreReason, app.timeoutMinutes, app.gitClean, profileId));
         }
 
         if (buildThreads == 1) {
@@ -475,7 +478,7 @@ public class EcosystemBuild implements Callable<Integer> {
 
                 TestResult result = testProject(task.name, task.repoUrl, task.branch, task.buildSubdir,
                         task.javaVersion, task.useAddonsRepo, task.extraMvnArgs, task.type, workPath,
-                        ciMode, task.timeoutMinutes, task.gitClean);
+                        ciMode, task.timeoutMinutes, task.gitClean, task.profileId);
                 results.add(result);
 
                 durationMap.put(task.name, result.durationMs());
@@ -589,7 +592,7 @@ public class EcosystemBuild implements Callable<Integer> {
 
                     TestResult result = testProject(task.name, task.repoUrl, task.branch, task.buildSubdir,
                             task.javaVersion, task.useAddonsRepo, task.extraMvnArgs, task.type, finalWorkPath,
-                            true, task.timeoutMinutes, task.gitClean);
+                            true, task.timeoutMinutes, task.gitClean, task.profileId);
 
                     // For failures, verify if project builds with its original Vaadin version
                     FailureMetadata metadata = null;
@@ -1012,7 +1015,7 @@ public class EcosystemBuild implements Callable<Integer> {
     private TestResult testProject(String name, String repoUrl, String branch, String buildSubdir,
                                     String javaVersion, boolean useAddonsRepo, List<String> extraMvnArgs,
                                     ProjectType type, Path workPath, boolean silent, int projectTimeoutMinutes,
-                                    boolean gitClean) {
+                                    boolean gitClean, String profileId) {
         int effectiveTimeout = projectTimeoutMinutes > 0 ? projectTimeoutMinutes : timeoutMinutes;
         long startTime = System.currentTimeMillis();
         Path projectPath = workPath.resolve(name);
@@ -1076,6 +1079,7 @@ public class EcosystemBuild implements Callable<Integer> {
             setPropertyArgs.add("-Dproperty=vaadin.version");
             setPropertyArgs.add("-DnewVersion=" + vaadinVersion);
             setPropertyArgs.add("-DgenerateBackupPoms=false");
+            if (profileId != null) setPropertyArgs.add("-DprofileId=" + profileId);
             setPropertyArgs.addAll(getCommonMvnArgs());
             if (!silent) System.out.println("  " + DIM + "$ mvn " + String.join(" ", setPropertyArgs) + RESET);
             runMavenSilent(buildPath, logFile, javaVersion, setPropertyArgs);
@@ -1086,9 +1090,16 @@ public class EcosystemBuild implements Callable<Integer> {
             setVersionArgs.add("-DnewVersion=" + vaadinVersion);
             setVersionArgs.add("-DartifactId=vaadin-bom");
             setVersionArgs.add("-DgenerateBackupPoms=false");
+            if (profileId != null) setVersionArgs.add("-DprofileId=" + profileId);
             setVersionArgs.addAll(getCommonMvnArgs());
             if (!silent) System.out.println("  " + DIM + "$ mvn " + String.join(" ", setVersionArgs) + RESET);
             runMavenSilent(buildPath, logFile, javaVersion, setVersionArgs);
+
+            // If a profileId is set and no extraMvnArg already activates a profile, add -P<profileId>
+            if (profileId != null && extraMvnArgs.stream().noneMatch(a -> a.startsWith("-P"))) {
+                extraMvnArgs = new ArrayList<>(extraMvnArgs);
+                extraMvnArgs.add("-P" + profileId);
+            }
 
             // Run the actual build
             List<String> mvnArgs = new ArrayList<>();
