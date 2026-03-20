@@ -115,7 +115,7 @@ jobs:
           echo "Build exit code: $EXIT_CODE"
 
           # Extract actual version used (from script output)
-          ACTUAL_VERSION=$(grep -oE 'Using (custom )?Vaadin version: [0-9a-zA-Z.\-]+' test-output.txt | head -1 | sed 's/.*: //' || echo "$VERSION")
+          ACTUAL_VERSION=$(grep -oE 'Using (custom |pre-release )?Vaadin version: [0-9a-zA-Z.\-]+' test-output.txt | head -1 | sed 's/.*: //' || echo "$VERSION")
           echo "actual_version=$ACTUAL_VERSION" >> $GITHUB_OUTPUT
           echo "Detected Vaadin version: $ACTUAL_VERSION"
 
