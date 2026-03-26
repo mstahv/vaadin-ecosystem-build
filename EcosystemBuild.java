@@ -1099,7 +1099,8 @@ public class EcosystemBuild implements Callable<Integer> {
             if (profileId != null && extraMvnArgs.stream().noneMatch(a -> a.startsWith("-P"))) {
                 extraMvnArgs = new ArrayList<>(extraMvnArgs);
                 extraMvnArgs.add("-P" + profileId);
-								
+            }
+
             // Vaadin 25.1+ requires Spring Boot 4.0.4+, try to update it in tested projects
             if (compareVersions(vaadinVersion, "25.1") >= 0) {
                 String requiredSpringBoot = "4.0.4";
