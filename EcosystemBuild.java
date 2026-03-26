@@ -1099,6 +1099,42 @@ public class EcosystemBuild implements Callable<Integer> {
             if (profileId != null && extraMvnArgs.stream().noneMatch(a -> a.startsWith("-P"))) {
                 extraMvnArgs = new ArrayList<>(extraMvnArgs);
                 extraMvnArgs.add("-P" + profileId);
+								
+            // Vaadin 25.1+ requires Spring Boot 4.0.4+, try to update it in tested projects
+            if (compareVersions(vaadinVersion, "25.1") >= 0) {
+                String requiredSpringBoot = "4.0.4";
+                String currentSpringBoot = detectSpringBootVersion(buildPath, javaVersion);
+                if (currentSpringBoot != null && compareFullVersions(currentSpringBoot, requiredSpringBoot) < 0) {
+                    if (!silent) System.out.println("  " + DIM + "Updating Spring Boot from " + currentSpringBoot + " to " + requiredSpringBoot + " for Vaadin 25.1+ compatibility" + RESET);
+
+                    // Try updating spring.boot.version property (used by spring-boot-starter-parent)
+                    List<String> sbVersionArgs = new ArrayList<>();
+                    sbVersionArgs.add("versions:set-property");
+                    sbVersionArgs.add("-Dproperty=spring.boot.version");
+                    sbVersionArgs.add("-DnewVersion=" + requiredSpringBoot);
+                    sbVersionArgs.add("-DgenerateBackupPoms=false");
+                    sbVersionArgs.addAll(getCommonMvnArgs());
+                    runMavenSilent(buildPath, logFile, javaVersion, sbVersionArgs);
+
+                    // Try updating spring.version property (used by some add-on projects)
+                    List<String> springVersionArgs = new ArrayList<>();
+                    springVersionArgs.add("versions:set-property");
+                    springVersionArgs.add("-Dproperty=spring.version");
+                    springVersionArgs.add("-DnewVersion=" + requiredSpringBoot);
+                    springVersionArgs.add("-DgenerateBackupPoms=false");
+                    springVersionArgs.addAll(getCommonMvnArgs());
+                    runMavenSilent(buildPath, logFile, javaVersion, springVersionArgs);
+
+                    // Try updating spring-boot-starter-parent parent POM version
+                    List<String> sbParentArgs = new ArrayList<>();
+                    sbParentArgs.add("versions:update-parent");
+                    sbParentArgs.add("-DparentVersion=[" + requiredSpringBoot + "]");
+                    sbParentArgs.add("-DgenerateBackupPoms=false");
+                    sbParentArgs.addAll(getCommonMvnArgs());
+                    runMavenSilent(buildPath, logFile, javaVersion, sbParentArgs);
+                } else if (currentSpringBoot != null && !silent) {
+                    System.out.println("  " + DIM + "Spring Boot " + currentSpringBoot + " already meets 25.1+ requirement" + RESET);
+                }
             }
 
             // Run the actual build
@@ -1179,6 +1215,37 @@ public class EcosystemBuild implements Callable<Integer> {
             Files.deleteIfExists(tempLog);
         } catch (Exception e) {
             // Ignore - version detection is optional
+        }
+        return null;
+    }
+
+    /**
+     * Detect the Spring Boot version used by the project via dependency:tree.
+     * @return The version string (e.g. "4.0.2"), or null if Spring Boot is not used
+     */
+    private String detectSpringBootVersion(Path buildPath, String javaVersion) {
+        try {
+            List<String> args = new ArrayList<>(List.of(
+                    "dependency:tree",
+                    "-Dincludes=org.springframework.boot:spring-boot-starter"
+            ));
+            args.addAll(getCommonMvnArgs());
+
+            Path tempLog = Files.createTempFile("spring-boot-version", ".log");
+            int result = runMavenSilent(buildPath, tempLog, javaVersion, args);
+
+            if (result == 0) {
+                String output = Files.readString(tempLog);
+                // Look for lines like: org.springframework.boot:spring-boot-starter:jar:4.0.2:compile
+                Matcher m = Pattern.compile("org\\.springframework\\.boot:spring-boot-starter:jar:([\\d.]+)").matcher(output);
+                if (m.find()) {
+                    Files.deleteIfExists(tempLog);
+                    return m.group(1);
+                }
+            }
+            Files.deleteIfExists(tempLog);
+        } catch (Exception e) {
+            // Ignore - version detection is best-effort
         }
         return null;
     }
@@ -1275,6 +1342,12 @@ public class EcosystemBuild implements Callable<Integer> {
 
     private int runMavenSilent(Path workDir, Path logFile, String javaVersion, List<String> mvnArgs, int timeout) throws IOException, InterruptedException {
         String mvnCommand = "mvn " + String.join(" ", mvnArgs);
+
+        // Log the command being executed
+        try (BufferedWriter writer = Files.newBufferedWriter(logFile, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
+            writer.write("$ " + mvnCommand);
+            writer.newLine();
+        }
 
         List<String> command;
         if (javaVersion != null) {
@@ -1862,6 +1935,22 @@ public class EcosystemBuild implements Callable<Integer> {
             return parts1[0] - parts2[0];
         }
         return parts1[1] - parts2[1];
+    }
+
+    // Compare two version strings with full major.minor.patch comparison
+    // Returns negative if v1 < v2, 0 if equal, positive if v1 > v2
+    private int compareFullVersions(String v1, String v2) {
+        String clean1 = v1.replaceAll("-.*", "");
+        String clean2 = v2.replaceAll("-.*", "");
+        String[] parts1 = clean1.split("\\.");
+        String[] parts2 = clean2.split("\\.");
+        int len = Math.max(parts1.length, parts2.length);
+        for (int i = 0; i < len; i++) {
+            int p1 = i < parts1.length ? Integer.parseInt(parts1[i]) : 0;
+            int p2 = i < parts2.length ? Integer.parseInt(parts2[i]) : 0;
+            if (p1 != p2) return p1 - p2;
+        }
+        return 0;
     }
 
     private int[] extractMajorMinor(String version) {
