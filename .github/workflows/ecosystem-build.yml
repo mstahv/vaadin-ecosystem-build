@@ -2,7 +2,7 @@ name: Ecosystem Build
 
 on:
   schedule:
-    # Run every 3 hours against 25.0-SNAPSHOT (at 0, 3, 9, 12, 15, 18, 21 - skipping 6 for stable)
+    # Run every 3 hours against 25.2-SNAPSHOT (at 0, 3, 9, 12, 15, 18, 21 - skipping 6 for stable)
     - cron: '0 0,3,9,12,15,18,21 * * *'
     # Run every 3 hours against 25.1-SNAPSHOT (at 1, 4, 7, 10, 13, 16, 19, 22)
     - cron: '0 1,4,7,10,13,16,19,22 * * *'
@@ -24,7 +24,7 @@ on:
 permissions: {}
 
 env:
-  SNAPSHOT_25_0: '25.0-SNAPSHOT'
+  SNAPSHOT_25_2: '25.2-SNAPSHOT'
   SNAPSHOT_25_1: '25.1-SNAPSHOT'
   SNAPSHOT_24_9: '24.9-SNAPSHOT'
 
@@ -66,8 +66,8 @@ jobs:
           # Determine version based on trigger
           if [ "${{ github.event_name }}" = "schedule" ]; then
             if [ "${{ github.event.schedule }}" = "0 0,3,9,12,15,18,21 * * *" ]; then
-              # 25.0-SNAPSHOT schedule (every 3 hours)
-              VERSION="$SNAPSHOT_25_0"
+              # 25.2-SNAPSHOT schedule (every 3 hours)
+              VERSION="$SNAPSHOT_25_2"
               echo "build_type=snapshot" >> $GITHUB_OUTPUT
             elif [ "${{ github.event.schedule }}" = "0 1,4,7,10,13,16,19,22 * * *" ]; then
               # 25.1-SNAPSHOT schedule (every 3 hours, offset)
@@ -332,7 +332,7 @@ jobs:
 
               const body = bodyParts.join('\n');
 
-              // Create version label: "vaadin-25.0" for releases, "vaadin-25.0-SNAPSHOT" for snapshots
+              // Create version label: "vaadin-25.2" for releases, "vaadin-25.2-SNAPSHOT" for snapshots
               const versionLabel = isSnapshot ? `vaadin-${version}` : `vaadin-${majorMinor}`;
 
               await github.rest.issues.create({

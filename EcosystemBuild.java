@@ -1207,7 +1207,7 @@ public class EcosystemBuild implements Callable<Integer> {
 
             if (result == 0) {
                 String output = Files.readString(tempLog).trim();
-                // Filter out Maven noise - version should match pattern like 24.6.0 or 25.0-SNAPSHOT
+                // Filter out Maven noise - version should match pattern like 24.6.0 or 25.2-SNAPSHOT
                 if (output.matches("\\d+\\.\\d+.*")) {
                     Files.deleteIfExists(tempLog);
                     return output;
@@ -1928,7 +1928,7 @@ public class EcosystemBuild implements Callable<Integer> {
     // Compare two version strings (major.minor comparison)
     // Returns negative if v1 < v2, 0 if equal, positive if v1 > v2
     private int compareVersions(String v1, String v2) {
-        // Extract major.minor from version strings (e.g., "25.0-SNAPSHOT" -> [25, 0])
+        // Extract major.minor from version strings (e.g., "25.2-SNAPSHOT" -> [25, 2])
         int[] parts1 = extractMajorMinor(v1);
         int[] parts2 = extractMajorMinor(v2);
 
