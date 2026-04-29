@@ -1911,6 +1911,13 @@ public class EcosystemBuild implements Callable<Integer> {
             return version.startsWith(prefix);
         }
 
+        // Minor version range: same major, minor >= specified (e.g. "25.1+")
+        if (pattern.endsWith("+")) {
+            int[] floor = extractMajorMinor(pattern.substring(0, pattern.length() - 1));
+            int[] v = extractMajorMinor(version);
+            return v[0] == floor[0] && v[1] >= floor[1];
+        }
+
         // Comparison operators (>=, <=, >, <)
         if (pattern.startsWith(">=")) {
             return compareVersions(version, pattern.substring(2)) >= 0;
