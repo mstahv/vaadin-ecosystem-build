@@ -99,7 +99,7 @@ public class EcosystemBuild implements Callable<Integer> {
             name = "Badge List Add-on";
             repoUrl = "https://github.com/FlowingCode/BadgeList";
             notifyUsers = List.of("javier-godoy", "scardanzan", "paodb");
-            versionOverrides = Map.of("24.*", new VersionConfig() {{ branch = "1.x"; }}, "25.*", new VersionConfig() {{ branch = "1.x"; profile = "v25"; }});
+            versionOverrides = Map.of("24.*", new VersionConfig() {{ branch = "1.x"; }}, "25.*", new VersionConfig() {{ branch = "1.x"; profile = "v25"; }}, "25.1+", new VersionConfig());
         }},
         new AddonProject() {{
             name = "Carousel Addon";
