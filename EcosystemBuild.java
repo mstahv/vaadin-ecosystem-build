@@ -119,10 +119,22 @@ public class EcosystemBuild implements Callable<Integer> {
             versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ profile = "v25"; }});
         }},
         new AddonProject() {{
+            name = "ChipField Add-on";
+            repoUrl = "https://github.com/FlowingCode/ChipFieldAddon";
+            notifyUsers = List.of("javier-godoy", "scardanzan", "paodb");
+            versionOverrides = Map.of("24.*", new VersionConfig() {{ profile = "v24"; }}, "25.*", new VersionConfig() {{ profile = "v25"; }});
+        }},
+        new AddonProject() {{
             name = "Day of Week Selector Add-on";
             repoUrl = "https://github.com/FlowingCode/DayOfWeekSelectorAddon";
             notifyUsers = List.of("javier-godoy", "scardanzan", "paodb");
             versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ profile = "v25"; }});
+        }},
+        new AddonProject() {{
+            name = "Enhanced Tabs Add-on";
+            repoUrl = "https://github.com/FlowingCode/EnhancedTabs";
+            notifyUsers = List.of("javier-godoy", "scardanzan", "paodb");
+            versionOverrides = Map.of("24.*", new VersionConfig() {{ profile = "v24"; }}, "25.*", new VersionConfig() {{ profile = "v25"; }});
         }},
         new AddonProject() {{
             name = "Error Window Add-on";
@@ -167,14 +179,38 @@ public class EcosystemBuild implements Callable<Integer> {
             versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ profile = "v25"; }});
         }},
         new AddonProject() {{
+            name = "OrgChart Add-on";
+            repoUrl = "https://github.com/FlowingCode/OrgChartAddon";
+            notifyUsers = List.of("javier-godoy", "scardanzan", "paodb");
+            versionOverrides = Map.of("24.*", new VersionConfig() {{ profile = "v24"; }}, "25.*", new VersionConfig() {{ profile = "v25"; }});
+        }},
+        new AddonProject() {{
+            name = "SimpleTimer Add-on";
+            repoUrl = "https://github.com/FlowingCode/SimpleTimerAddon";
+            notifyUsers = List.of("javier-godoy", "scardanzan", "paodb");
+            versionOverrides = Map.of("24.*", new VersionConfig() {{ profile = "v24"; }}, "25.*", new VersionConfig() {{ profile = "v25"; }});
+        }},
+        new AddonProject() {{
             name = "TwinColGrid Add-on";
             repoUrl = "https://github.com/FlowingCode/TwinColGrid";
             notifyUsers = List.of("javier-godoy", "scardanzan", "paodb");
             versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ profile = "v25"; }});
         }},
         new AddonProject() {{
+            name = "XTerm Console Add-on";
+            repoUrl = "https://github.com/FlowingCode/XTermConsoleAddon";
+            notifyUsers = List.of("javier-godoy", "scardanzan", "paodb");
+            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ profile = "v25"; }});
+        }},
+        new AddonProject() {{
             name = "Year-Month Calendar Add-on";
             repoUrl = "https://github.com/FlowingCode/YearMonthCalendarAddon";
+            notifyUsers = List.of("javier-godoy", "scardanzan", "paodb");
+            versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ profile = "v25"; }});
+        }},
+        new AddonProject() {{
+            name = "Zoomist Add-on";
+            repoUrl = "https://github.com/FlowingCode/Zoomist";
             notifyUsers = List.of("javier-godoy", "scardanzan", "paodb");
             versionOverrides = Map.of("24.*", new VersionConfig(), "25.*", new VersionConfig() {{ profile = "v25"; }});
         }}
