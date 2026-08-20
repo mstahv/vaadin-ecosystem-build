@@ -984,7 +984,8 @@ public class EcosystemBuild implements Callable<Integer> {
 
     private TestResult runSmokeTest(Path workPath) {
         long startTime = System.currentTimeMillis();
-        String name = "vaadin-project-archetype";
+        // Must match the log file name convention (<name>-build.log) used by the dashboard
+        String name = "smoke-test";
         Path smokeTestPath = workPath.resolve("smoke-test");
         Path logFile = versionOutputPath.resolve("smoke-test-build.log");
 
