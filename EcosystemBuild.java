@@ -59,6 +59,7 @@ public class EcosystemBuild implements Callable<Integer> {
             notifyUsers = List.of("jcgueriaud1");
             timeoutMinutes = 10;
             gitClean = true;
+            versionOverrides = Map.of("25.1.*", new VersionConfig() {{ branch = "v25.1"; }}, "25.2.*", new VersionConfig() {{ branch = "v25.1"; }});
         }},
         new AddonProject() {{
             name = "sortable-layout";
