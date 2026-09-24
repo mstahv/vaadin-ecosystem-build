@@ -17,6 +17,8 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.*;
 
 @Command(name = "ecosystem-build", mixinStandardHelpOptions = true, version = "1.0",
@@ -245,6 +247,7 @@ public class EcosystemBuild implements Callable<Integer> {
     private static final String MOVE_UP = "\u001B[1A";
 
     private static final int TAIL_LINES = 10;
+    private static final String TIMEOUT_MARKER = "=== BUILD TIMEOUT ===";
 
     private static final String FALLBACK_VERSION = "25.0.6";
     private static final Pattern PRE_RELEASE_PATTERN = Pattern.compile(".*-(alpha|beta|rc)\\d*$", Pattern.CASE_INSENSITIVE);
@@ -264,8 +267,11 @@ public class EcosystemBuild implements Callable<Integer> {
     @Option(names = {"--quiet-downloads", "-q"}, description = "Silence Maven download progress messages")
     private boolean quietDownloads;
 
-    @Option(names = {"--timeout", "-t"}, description = "Build timeout per project in minutes", defaultValue = "5")
+    @Option(names = {"--timeout", "-t"}, description = "Inactivity timeout per project in minutes: a build producing no output for this long is killed", defaultValue = "5")
     private int timeoutMinutes;
+
+    @Option(names = {"--max-build-time"}, description = "Hard limit for a single build command in minutes, regardless of output", defaultValue = "30")
+    private int maxBuildMinutes;
 
     @Option(names = {"--buildThreads", "-j"}, description = "Number of concurrent builds (default: 1)", defaultValue = "1")
     private int buildThreads;
@@ -280,6 +286,8 @@ public class EcosystemBuild implements Callable<Integer> {
     private String cachedMavenMetadataXml;
     private String cachedArchetypeMetadataXml;
     private Path versionOutputPath;  // Version-specific output directory for logs and reports
+    // Identifies this run; the logs are archived to <version>-archives/<buildId>/, giving them a permanent URL
+    private final String buildId = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss").format(LocalDateTime.now());
 
     // Project types
     enum ProjectType { SMOKE_TEST, ADDON, APP }
@@ -339,7 +347,13 @@ public class EcosystemBuild implements Callable<Integer> {
     enum BuildStatus { PENDING, WAITING, BUILDING, PASSED, FAILED, KNOWN_ISSUE, IGNORED }
 
     // Metadata about a failed build - used to provide context in GitHub issues
-    record FailureMetadata(String repoUrl, String originalVersion, boolean buildsWithOriginal, List<String> notifyUsers) {}
+    record FailureMetadata(String repoUrl, String originalVersion, boolean buildsWithOriginal, List<String> notifyUsers,
+                           FailureDetails details) {}
+
+    // What went wrong in a failed build, extracted from its log.
+    // The signature is a stable key (failing tests, compile errors or failed goal) used to tell
+    // a recurring (flaky) failure apart from a new one; the summary is a human-readable excerpt.
+    record FailureDetails(String signature, String summary) {}
 
     private final Map<String, BuildStatus> statusMap = new LinkedHashMap<>();
     private final Map<String, ProjectType> projectTypes = new HashMap<>();
@@ -397,6 +411,7 @@ public class EcosystemBuild implements Callable<Integer> {
         // Archive previous build logs before starting fresh
         archivePreviousLogs(workPath, vaadinVersion);
         Files.createDirectories(versionOutputPath);
+        Files.writeString(versionOutputPath.resolve("build-id.txt"), buildId + "\n");
 
         // Run smoke test first to validate Vaadin version and cache artifacts
         System.out.println("🔥 Running smoke test to validate Vaadin " + vaadinVersion + "...");
@@ -553,7 +568,8 @@ public class EcosystemBuild implements Callable<Integer> {
                     boolean buildsWithOriginal = verifyWithOriginalVersion(buildPath, task.javaVersion,
                             task.useAddonsRepo, task.extraMvnArgs, verifyLog);
 
-                    failureMetadata.put(task.name, new FailureMetadata(task.repoUrl, originalVersion, buildsWithOriginal, task.notifyUsers));
+                    failureMetadata.put(task.name, new FailureMetadata(task.repoUrl, originalVersion, buildsWithOriginal,
+                            task.notifyUsers, extractFailureDetails(result)));
 
                     if (!ciMode && originalVersion != null) {
                         System.out.printf("  %s   Original version: %s, builds: %s%s%n", DIM, originalVersion,
@@ -649,7 +665,8 @@ public class EcosystemBuild implements Callable<Integer> {
                         Path verifyLog = versionOutputPath.resolve(task.name + "-original-build.log");
                         boolean buildsWithOriginal = verifyWithOriginalVersion(buildPath, task.javaVersion,
                                 task.useAddonsRepo, task.extraMvnArgs, verifyLog);
-                        metadata = new FailureMetadata(task.repoUrl, originalVersion, buildsWithOriginal, task.notifyUsers);
+                        metadata = new FailureMetadata(task.repoUrl, originalVersion, buildsWithOriginal,
+                                task.notifyUsers, extractFailureDetails(result));
                     }
 
                     synchronized (slotsLock) {
@@ -848,6 +865,9 @@ public class EcosystemBuild implements Callable<Integer> {
 
         // Write list of failed projects for CI integration
         writeFailedProjectsList();
+
+        // Archive this run right away so issue comments can link to its logs permanently
+        copyToArchive(Path.of(workDir));
 
         return 0;
     }
@@ -1205,7 +1225,7 @@ public class EcosystemBuild implements Callable<Integer> {
             if (buildResult == 0) {
                 return new TestResult(name, type, true, "Build successful", elapsed(startTime), logFile);
             } else if (buildResult == -1) {
-                return new TestResult(name, type, false, "Build timed out after " + effectiveTimeout + " min", elapsed(startTime), logFile);
+                return new TestResult(name, type, false, "Build timed out", elapsed(startTime), logFile);
             } else {
                 return new TestResult(name, type, false, "Build failed (exit code: " + buildResult + ")", elapsed(startTime), logFile);
             }
@@ -1446,20 +1466,9 @@ public class EcosystemBuild implements Callable<Integer> {
 
         Process process = pb.start();
 
-        // Timeout watchdog - destroys process if it exceeds the time limit
-        AtomicBoolean timedOut = new AtomicBoolean(false);
-        Thread watchdog = new Thread(() -> {
-            try {
-                if (!process.waitFor(timeout, TimeUnit.MINUTES)) {
-                    timedOut.set(true);
-                    process.destroyForcibly();
-                }
-            } catch (InterruptedException e) {
-                // Watchdog interrupted = process finished before timeout
-            }
-        });
-        watchdog.setDaemon(true);
-        watchdog.start();
+        AtomicLong lastOutput = new AtomicLong(System.currentTimeMillis());
+        AtomicReference<String> timeoutReason = new AtomicReference<>();
+        Thread watchdog = startWatchdog(process, lastOutput, timeout, timeoutReason);
 
         LinkedList<String> tailBuffer = new LinkedList<>();
         int displayedLines = 0;
@@ -1469,6 +1478,7 @@ public class EcosystemBuild implements Callable<Integer> {
 
             String line;
             while ((line = reader.readLine()) != null) {
+                lastOutput.set(System.currentTimeMillis());
                 // Write to log file
                 writer.write(line);
                 writer.newLine();
@@ -1492,7 +1502,7 @@ public class EcosystemBuild implements Callable<Integer> {
                 }
             }
         } catch (IOException e) {
-            if (!timedOut.get()) throw e;
+            if (timeoutReason.get() == null) throw e;
             // Swallow IOException caused by process being destroyed on timeout
         }
 
@@ -1503,35 +1513,71 @@ public class EcosystemBuild implements Callable<Integer> {
         lastOutputLines = countOutputLines();
 
         process.waitFor(); // Ensure process is fully terminated
-        if (timedOut.get()) {
-            // Write timeout message to log file
-            try (BufferedWriter timeoutWriter = Files.newBufferedWriter(logFile, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-                timeoutWriter.write("\n\n=== BUILD TIMEOUT ===");
-                timeoutWriter.newLine();
-                timeoutWriter.write("Build was forcibly terminated after " + timeout + " minutes of inactivity.");
-                timeoutWriter.newLine();
-                timeoutWriter.flush();
-            } catch (IOException e) {
-                System.err.println("Failed to write timeout message to log file: " + e.getMessage());
-            }
-            System.out.println(RED + "⏱️  Build timed out after " + timeout + " minutes" + RESET);
+        if (timeoutReason.get() != null) {
+            writeTimeoutMessage(logFile, timeoutReason.get());
+            System.out.println(RED + "⏱️  Build timed out: " + timeoutReason.get() + RESET);
             return -1; // Timeout exit code
         }
         return process.exitValue();
     }
 
     /**
-     * Reads process output to a log file with a timeout watchdog.
-     * The watchdog destroys the process if it exceeds the timeout,
-     * which closes the stream and unblocks the readLine loop.
+     * Reads process output to a log file with a timeout watchdog, see {@link #startWatchdog}.
      */
     private int readOutputWithTimeout(Process process, Path logFile, int timeout) throws IOException, InterruptedException {
-        AtomicBoolean timedOut = new AtomicBoolean(false);
+        AtomicLong lastOutput = new AtomicLong(System.currentTimeMillis());
+        AtomicReference<String> timeoutReason = new AtomicReference<>();
+        Thread watchdog = startWatchdog(process, lastOutput, timeout, timeoutReason);
+
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+             BufferedWriter writer = Files.newBufferedWriter(logFile, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                lastOutput.set(System.currentTimeMillis());
+                writer.write(line);
+                writer.newLine();
+            }
+        } catch (IOException e) {
+            if (timeoutReason.get() == null) throw e;
+            // Swallow IOException caused by process being destroyed on timeout
+        }
+
+        watchdog.interrupt();
+        process.waitFor(); // Ensure process is fully terminated
+
+        if (timeoutReason.get() != null) {
+            writeTimeoutMessage(logFile, timeoutReason.get());
+            return -1; // Timeout exit code
+        }
+        return process.exitValue();
+    }
+
+    /**
+     * Kills the process (and its children, e.g. mvn started via bash) if it produces no output for
+     * {@code inactivityMinutes}, or if it runs longer than the hard limit. The reason is stored in
+     * {@code timeoutReason}. Killing the process closes its stream, which unblocks the reading loop.
+     */
+    private Thread startWatchdog(Process process, AtomicLong lastOutput, int inactivityMinutes,
+                                 AtomicReference<String> timeoutReason) {
+        long start = System.currentTimeMillis();
+        long inactivityMs = TimeUnit.MINUTES.toMillis(inactivityMinutes);
+        long maxMs = TimeUnit.MINUTES.toMillis(Math.max(maxBuildMinutes, inactivityMinutes));
         Thread watchdog = new Thread(() -> {
             try {
-                if (!process.waitFor(timeout, TimeUnit.MINUTES)) {
-                    timedOut.set(true);
-                    process.destroyForcibly();
+                while (!process.waitFor(5, TimeUnit.SECONDS)) {
+                    long now = System.currentTimeMillis();
+                    String reason = null;
+                    if (now - lastOutput.get() > inactivityMs) {
+                        reason = "no output for " + inactivityMinutes + " minutes";
+                    } else if (now - start > maxMs) {
+                        reason = "exceeded the maximum build time of " + TimeUnit.MILLISECONDS.toMinutes(maxMs) + " minutes";
+                    }
+                    if (reason != null) {
+                        timeoutReason.set(reason);
+                        process.descendants().forEach(ProcessHandle::destroyForcibly);
+                        process.destroyForcibly();
+                        return;
+                    }
                 }
             } catch (InterruptedException e) {
                 // Watchdog interrupted = process finished before timeout
@@ -1539,36 +1585,18 @@ public class EcosystemBuild implements Callable<Integer> {
         });
         watchdog.setDaemon(true);
         watchdog.start();
+        return watchdog;
+    }
 
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-             BufferedWriter writer = Files.newBufferedWriter(logFile, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                writer.write(line);
-                writer.newLine();
-            }
+    private void writeTimeoutMessage(Path logFile, String reason) {
+        try (BufferedWriter timeoutWriter = Files.newBufferedWriter(logFile, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
+            timeoutWriter.write("\n\n" + TIMEOUT_MARKER);
+            timeoutWriter.newLine();
+            timeoutWriter.write("Build was forcibly terminated: " + reason + ".");
+            timeoutWriter.newLine();
         } catch (IOException e) {
-            if (!timedOut.get()) throw e;
-            // Swallow IOException caused by process being destroyed on timeout
+            System.err.println("Failed to write timeout message to log file: " + e.getMessage());
         }
-
-        watchdog.interrupt();
-        process.waitFor(); // Ensure process is fully terminated
-
-        if (timedOut.get()) {
-            // Write timeout message to log file
-            try (BufferedWriter timeoutWriter = Files.newBufferedWriter(logFile, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-                timeoutWriter.write("\n\n=== BUILD TIMEOUT ===");
-                timeoutWriter.newLine();
-                timeoutWriter.write("Build was forcibly terminated after " + timeout + " minutes of inactivity.");
-                timeoutWriter.newLine();
-                timeoutWriter.flush();
-            } catch (IOException e) {
-                System.err.println("Failed to write timeout message to log file: " + e.getMessage());
-            }
-            return -1; // Timeout exit code
-        }
-        return process.exitValue();
     }
 
     private long elapsed(long startTime) {
@@ -1765,7 +1793,8 @@ public class EcosystemBuild implements Callable<Integer> {
 
     /**
      * Detect flaky projects by scanning build archives for alternating pass/fail patterns.
-     * A currently-failing project is flaky if it passed in any of the recent archived builds.
+     * A currently-failing project is flaky if it has, within the recent archives, failed and then
+     * passed again. A project that simply started failing (a regression) is not flaky.
      */
     private void detectFlakyProjects(Path workPath) {
         Path archivesDir = workPath.resolve(vaadinVersion + "-archives");
@@ -1784,9 +1813,11 @@ public class EcosystemBuild implements Callable<Integer> {
         Instant cutoffTime = Instant.now().minus(7, ChronoUnit.DAYS);
         DateTimeFormatter archiveFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
 
+        Set<String> passedSince = new HashSet<>();  // Passed in an archive newer than the one being inspected
         try (var dirs = Files.list(archivesDir)) {
             List<Path> archiveDirs = dirs
                     .filter(Files::isDirectory)
+                    .filter(d -> !d.getFileName().toString().equals(buildId))
                     .sorted(Comparator.comparing(Path::getFileName).reversed()) // newest first
                     .toList();
 
@@ -1818,9 +1849,11 @@ public class EcosystemBuild implements Callable<Integer> {
                     // Skip first line (vaadin_version=...)
                     lines.stream().skip(1).filter(l -> !l.isBlank()).forEach(archivedFailures::add);
                 }
-                // Projects that are currently failing but were NOT failing in this archive = flaky
                 for (String project : currentlyFailing) {
                     if (!archivedFailures.contains(project)) {
+                        passedSince.add(project);
+                    } else if (passedSince.contains(project)) {
+                        // Failed earlier, passed after that, now fails again
                         flakyProjects.add(project);
                     }
                 }
@@ -1838,10 +1871,15 @@ public class EcosystemBuild implements Callable<Integer> {
         Path versionDir = workPath.resolve(version);
         if (!Files.exists(versionDir)) return;
 
-        // Archive to work/<version>-archives/<timestamp>/
+        // Archive to work/<version>-archives/<build id>/. A completed run has already copied itself there
+        // (see copyToArchive), moving the files just replaces those copies. Older or interrupted runs
+        // without a build id are archived using the current time.
         Path archivesDir = workPath.resolve(version + "-archives");
-        String timestamp = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss").format(LocalDateTime.now());
-        Path archiveTarget = archivesDir.resolve(timestamp);
+        Path buildIdFile = versionDir.resolve("build-id.txt");
+        String archiveName = Files.exists(buildIdFile)
+                ? Files.readString(buildIdFile).trim()
+                : DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss").format(LocalDateTime.now());
+        Path archiveTarget = archivesDir.resolve(archiveName);
         Files.createDirectories(archiveTarget);
 
         // Move all files from the version directory into the archive
@@ -1868,6 +1906,168 @@ public class EcosystemBuild implements Callable<Integer> {
                 }
             });
         }
+    }
+
+    /**
+     * Copies the logs of the current run to work/<version>-archives/<build id>/ so that they can be
+     * linked to permanently (until the archive is cleaned up) as soon as the run finishes.
+     */
+    private void copyToArchive(Path workPath) {
+        Path archiveTarget = workPath.resolve(vaadinVersion + "-archives").resolve(buildId);
+        try (var entries = Files.list(versionOutputPath)) {
+            Files.createDirectories(archiveTarget);
+            for (Path source : entries.toList()) {
+                if (Files.isRegularFile(source)) {
+                    Files.copy(source, archiveTarget.resolve(source.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        } catch (IOException e) {
+            System.err.println("Warning: Could not copy logs to archive " + archiveTarget + ": " + e.getMessage());
+        }
+    }
+
+    private static final Pattern TEST_SECTION = Pattern.compile("^\\[ERROR\\] (Failures|Errors):\\s*$");
+    private static final Pattern TEST_ENTRY = Pattern.compile("^\\[ERROR\\]   (\\S.*)$");
+    private static final Pattern RERUN_TEST_ENTRY = Pattern.compile("^\\[ERROR\\] ([\\w$]+(?:\\.[\\w$]+)+\\S*)\\s*$");
+    private static final Pattern COMPILE_ERROR = Pattern.compile("^\\[ERROR\\] (?:\\S*/)?([^/\\s]+\\.(?:java|kt|ts)):\\[[\\d,]+\\] (.*)$");
+    private static final Pattern FAILED_GOAL = Pattern.compile("^\\[ERROR\\] Failed to execute goal ([^:\\s]+:[^:\\s]+):[^:\\s]+:(\\S+).*$");
+    private static final int SUMMARY_MAX_LINES = 30;
+    private static final int SUMMARY_MAX_LINE_LENGTH = 400;
+
+    /**
+     * Extracts what failed from a build log: failing tests, compilation errors, the failed Maven goal
+     * or a timeout. Only the last "clean verify" invocation is inspected, so that output of the
+     * preparatory version updates does not interfere.
+     */
+    private FailureDetails extractFailureDetails(TestResult result) {
+        List<String> lines;
+        try {
+            lines = Files.readAllLines(result.logFile());
+        } catch (IOException | UncheckedIOException e) {
+            return new FailureDetails("unknown", result.message());
+        }
+        int start = 0;
+        for (int i = lines.size() - 1; i >= 0; i--) {
+            if (lines.get(i).startsWith("$ mvn clean verify")) {
+                start = i;
+                break;
+            }
+        }
+        lines = lines.subList(start, lines.size());
+
+        TreeSet<String> signature = new TreeSet<>();
+        List<String> summary = new ArrayList<>();
+        boolean timedOut = false;
+        String failedGoal = null;
+        String failedGoalLine = null;
+        boolean inTestSection = false;
+        for (String line : lines) {
+            if (line.startsWith(TIMEOUT_MARKER)) {
+                timedOut = true;
+            }
+            if (TEST_SECTION.matcher(line).matches()) {
+                inTestSection = true;
+                summary.add(line.substring(8).trim());
+                continue;
+            }
+            if (inTestSection) {
+                Matcher m = TEST_ENTRY.matcher(line);
+                Matcher rerun = RERUN_TEST_ENTRY.matcher(line);
+                if (m.matches()) {
+                    String entry = m.group(1);
+                    summary.add("  " + entry);
+                    if (!entry.startsWith("Run ")) {  // "Run N:" lines are reruns of the previous test
+                        signature.add("test: " + testName(entry));
+                    }
+                    continue;
+                } else if (rerun.matches()) {
+                    // With reruns enabled, surefire lists "[ERROR] pkg.Test.method" followed by "Run N:" lines
+                    summary.add("  " + rerun.group(1));
+                    signature.add("test: " + testName(rerun.group(1)));
+                    continue;
+                } else if (line.matches("^\\[INFO\\]\\s*$")) {
+                    continue;
+                }
+                inTestSection = false;
+            }
+            Matcher compile = COMPILE_ERROR.matcher(line);
+            if (compile.matches()) {
+                signature.add("compile: " + compile.group(1) + " " + compile.group(2));
+                summary.add(compile.group(1) + ": " + compile.group(2));
+                continue;
+            }
+            Matcher goal = FAILED_GOAL.matcher(line);
+            if (goal.matches() && failedGoal == null) {
+                failedGoal = goal.group(1) + ":" + goal.group(2);
+                failedGoalLine = line.substring(8);
+            }
+        }
+
+        if (timedOut) {
+            // Show where the build got stuck
+            summary.clear();
+            summary.add(result.message());
+            summary.addAll(lastLines(lines.stream().filter(l -> !l.startsWith(TIMEOUT_MARKER)).toList(), 12));
+            return new FailureDetails("timeout", formatSummary(summary));
+        }
+        if (failedGoalLine != null) {
+            summary.add(failedGoalLine);
+        }
+        if (signature.isEmpty() && failedGoal != null) {
+            signature.add("goal: " + failedGoal);
+        }
+        if (signature.isEmpty()) {
+            summary.add(result.message());
+            summary.addAll(lastLines(lines, 15));
+            return new FailureDetails("unknown", formatSummary(summary));
+        }
+        return new FailureDetails(String.join("\n", signature), formatSummary(summary));
+    }
+
+    /**
+     * "EagerSaveViewTest.method:49->inView:30 » IllegalArgument ..." or "org.example.EagerSaveViewTest.method"
+     * -> "EagerSaveViewTest.method"
+     */
+    private static String testName(String entry) {
+        String name = entry.split("[:\\s]", 2)[0];
+        String[] parts = name.split("\\.");
+        return parts.length > 2 ? parts[parts.length - 2] + "." + parts[parts.length - 1] : name;
+    }
+
+    private static List<String> lastLines(List<String> lines, int count) {
+        List<String> nonBlank = lines.stream().filter(l -> !l.isBlank()).toList();
+        return nonBlank.subList(Math.max(0, nonBlank.size() - count), nonBlank.size());
+    }
+
+    private static String formatSummary(List<String> lines) {
+        var formatted = lines.stream()
+                .distinct()
+                .limit(SUMMARY_MAX_LINES)
+                .map(l -> l.length() > SUMMARY_MAX_LINE_LENGTH ? l.substring(0, SUMMARY_MAX_LINE_LENGTH) + "…" : l)
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        if (lines.stream().distinct().count() > SUMMARY_MAX_LINES) {
+            formatted.add("…");
+        }
+        return String.join("\n", formatted);
+    }
+
+    private static String jsonString(String value) {
+        if (value == null) return "null";
+        StringBuilder sb = new StringBuilder("\"");
+        for (char c : value.toCharArray()) {
+            switch (c) {
+                case '"' -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> {
+                    if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
+                    else sb.append(c);
+                }
+            }
+        }
+        return sb.append('"').toString();
     }
 
     private void deleteDirectory(Path path) throws IOException {
@@ -2068,7 +2268,10 @@ public class EcosystemBuild implements Callable<Integer> {
                     writer.write("    \"repoUrl\": " + (repoUrl != null ? "\"" + repoUrl + "\"" : "null") + ",\n");
                     writer.write("    \"originalVersion\": " + (originalVersion != null ? "\"" + originalVersion + "\"" : "null") + ",\n");
                     writer.write("    \"buildsWithOriginal\": " + builds + ",\n");
-                    writer.write("    \"notifyUsers\": [" + notifyUsers.stream().map(u -> "\"" + u + "\"").collect(java.util.stream.Collectors.joining(", ")) + "]\n");
+                    FailureDetails details = entry.getValue().details();
+                    writer.write("    \"notifyUsers\": [" + notifyUsers.stream().map(u -> "\"" + u + "\"").collect(java.util.stream.Collectors.joining(", ")) + "],\n");
+                    writer.write("    \"failureSignature\": " + jsonString(details.signature()) + ",\n");
+                    writer.write("    \"failureSummary\": " + jsonString(details.summary()) + "\n");
                     writer.write("  }" + (i < entries.size() - 1 ? "," : "") + "\n");
                 }
                 writer.write("}\n");

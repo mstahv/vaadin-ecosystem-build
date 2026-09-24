@@ -165,6 +165,62 @@ jobs:
 
             const { series, majorMinor, isSnapshot } = getVersionSeries(version);
 
+            // Logs of this run are archived to <version>-archives/<build id>/, which gives them a permanent URL
+            let buildId = null;
+            try {
+              buildId = fs.readFileSync(`work/${version}/build-id.txt`, 'utf8').trim();
+            } catch (e) {
+              console.log('Could not read build-id.txt:', e.message);
+            }
+            const logsBase = 'https://ecosystembuild.parttio.org/logs';
+            const buildDirUrl = buildId ? `${logsBase}/${version}-archives/${buildId}/` : `${logsBase}/${version}/`;
+            function buildLinks(project) {
+              return [
+                `**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                `**Build Log:** [${project}-build.log](${buildDirUrl}${encodeURIComponent(project)}-build.log)`,
+                `**All logs of this build:** [${buildId || version}](${buildDirUrl})`,
+              ].join('\n');
+            }
+
+            // Failure signature (failing tests, compile errors or failed goal) is used to tell a
+            // recurring failure from a new one. A hash of it is stored in a hidden marker in issues/comments.
+            const crypto = require('crypto');
+            const SIGNATURE_MARKER = /<!-- failure-signature: (\S+) -->/g;
+            function signatureKey(signature) {
+              if (!signature) return null;
+              if (signature === 'timeout' || signature === 'unknown') return signature;
+              return crypto.createHash('sha256').update(signature).digest('hex').substring(0, 16);
+            }
+            // Signatures that do not identify the failure; for these, fall back to a time window
+            const isGenericKey = key => !key || key === 'timeout' || key === 'unknown';
+            const FLAKY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+            function failureDetails(project) {
+              const metadata = failureMetadata[project];
+              const parts = [];
+              if (metadata?.failureSummary) {
+                parts.push('### Failure', '', '````text', metadata.failureSummary, '````');
+              }
+              const key = signatureKey(metadata?.failureSignature);
+              if (key) parts.push(`<!-- failure-signature: ${key} -->`);
+              return parts.join('\n');
+            }
+
+            // Latest recorded failure signature of an issue: newest comment with a marker, or the body
+            async function lastSignatureKey(issue) {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                per_page: 100
+              });
+              for (const text of [issue.body, ...comments.map(c => c.body)].reverse()) {
+                const matches = [...(text || '').matchAll(SIGNATURE_MARKER)];
+                if (matches.length > 0) return matches[matches.length - 1][1];
+              }
+              return null;
+            }
+
             // Read failed projects from file
             let failedProjects = [];
             try {
@@ -192,7 +248,7 @@ jobs:
             }
 
             // Get existing issues (both open and closed) for flaky detection
-            const issues = await github.rest.issues.listForRepo({
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'all',
@@ -210,13 +266,17 @@ jobs:
             for (const project of failedProjects) {
               const title = issueTitle(project);
 
-              // Check for any existing issue (open or closed) matching project+series
-              const existingIssue = isSnapshot
-                ? issues.data.find(i => i.title.includes(project) && i.title.includes(version))
-                : issues.data.find(i => issueMatchesProjectAndSeries(i.title, project, series));
+              const metadata = failureMetadata[project];
+              const currentKey = signatureKey(metadata?.failureSignature);
+
+              // Check for any existing issue (open or closed) matching project+series.
+              // Prefer an open one, otherwise the newest (issues are listed newest first).
+              const matchingIssues = issues.filter(i => issueMatchesProjectAndSeries(i.title, project, series));
+              const existingIssue = matchingIssues.find(i => i.state === 'open') || matchingIssues[0];
 
               if (existingIssue && existingIssue.state === 'open') {
                 console.log(`Issue already open for ${project}: #${existingIssue.number}`);
+                let commented = false;
 
                 // For non-SNAPSHOT: add "Still failing" comment if exact version changed
                 if (!isSnapshot) {
@@ -227,8 +287,9 @@ jobs:
                       owner: context.repo.owner,
                       repo: context.repo.repo,
                       issue_number: existingIssue.number,
-                      body: `Still failing in Vaadin ${version}.\n\n**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n**Build Log:** [${project}-build.log](https://ecosystembuild.parttio.org/logs/${version}/${encodeURIComponent(project)}-build.log)\n**Archives:** [${version}-archives](https://ecosystembuild.parttio.org/logs/${version}-archives/)`
+                      body: `Still failing in Vaadin ${version}.\n\n${buildLinks(project)}\n\n${failureDetails(project)}`
                     });
+                    commented = true;
                     // Update body with last tested version
                     let updatedBody = existingIssue.body;
                     if (updatedBody.includes('**Last tested version:**')) {
@@ -245,10 +306,43 @@ jobs:
                     console.log(`Added "Still failing in ${version}" comment to #${existingIssue.number}`);
                   }
                 }
+
+                // Report when the failure changes while the issue is open (e.g. one problem fixed, another appeared)
+                if (!commented && currentKey) {
+                  const previousKey = await lastSignatureKey(existingIssue);
+                  if (previousKey !== currentKey) {
+                    const heading = previousKey
+                      ? `The failure of **${project}** against Vaadin ${version} has changed.`
+                      : `Current failure of **${project}** against Vaadin ${version}.`;
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: existingIssue.number,
+                      body: `${heading}\n\n${buildLinks(project)}\n\n${failureDetails(project)}`
+                    });
+                    console.log(`Failure signature changed for #${existingIssue.number}: ${previousKey} -> ${currentKey}`);
+                  }
+                }
                 continue;
               }
 
+              // A closed issue is reopened as flaky only if it is the same failure again. A different failure
+              // (e.g. a new test failing weeks later) gets its own issue. When the failure can't be identified,
+              // it counts as the same one only if the issue was closed recently.
+              let previousIssue = null;
               if (existingIssue && existingIssue.state === 'closed') {
+                const previousKey = await lastSignatureKey(existingIssue);
+                const closedRecently = Date.now() - new Date(existingIssue.closed_at).getTime() < FLAKY_WINDOW_MS;
+                const sameFailure = isGenericKey(previousKey) || isGenericKey(currentKey)
+                  ? closedRecently && (!previousKey || previousKey === currentKey)
+                  : previousKey === currentKey;
+                console.log(`${project}: closed issue #${existingIssue.number}, signature ${previousKey} -> ${currentKey}, closed recently: ${closedRecently}, same failure: ${sameFailure}`);
+                if (!sameFailure) {
+                  previousIssue = existingIssue;
+                }
+              }
+
+              if (existingIssue && existingIssue.state === 'closed' && !previousIssue) {
                 // Reopen the closed issue and mark as flaky
                 await github.rest.issues.update({
                   owner: context.repo.owner,
@@ -262,7 +356,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: existingIssue.number,
-                  body: `Flaky build detected: **${project}** is failing again against Vaadin ${version}.\n\n**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n**Build Log:** [${project}-build.log](https://ecosystembuild.parttio.org/logs/${version}/${encodeURIComponent(project)}-build.log)\n**Archives:** [${version}-archives](https://ecosystembuild.parttio.org/logs/${version}-archives/)`
+                  body: `Flaky build detected: **${project}** is failing again against Vaadin ${version} with the same failure as before.\n\n${buildLinks(project)}\n\n${failureDetails(project)}`
                 });
 
                 // Update title to new series format if it was old-format
@@ -280,7 +374,6 @@ jobs:
               }
 
               // Build issue body with metadata
-              const metadata = failureMetadata[project];
               const projectUrl = metadata?.repoUrl || null;
               const projectLink = projectUrl ? `[${project}](${projectUrl})` : project;
               const versionLine = isSnapshot
@@ -292,10 +385,12 @@ jobs:
                 `**Project:** ${projectLink}`,
                 versionLine,
                 `**Build Type:** ${buildType}`,
-                `**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-                `**Build Log:** [${project}-build.log](https://ecosystembuild.parttio.org/logs/${version}/${encodeURIComponent(project)}-build.log)`,
-                `**Archives:** [${version}-archives](https://ecosystembuild.parttio.org/logs/${version}-archives/)`,
+                buildLinks(project),
               ];
+
+              if (previousIssue) {
+                bodyParts.push('', `Previous issue #${previousIssue.number} was about a different failure.`);
+              }
 
               if (metadata) {
                 bodyParts.push('');
@@ -319,6 +414,11 @@ jobs:
                 } else {
                   bodyParts.push('Could not detect the project\'s original Vaadin version.');
                 }
+              }
+
+              const details = failureDetails(project);
+              if (details) {
+                bodyParts.push('', details);
               }
 
               bodyParts.push('');
@@ -368,6 +468,23 @@ jobs:
 
             const { series, isSnapshot } = getVersionSeries(version);
 
+            // Logs of this run are archived to <version>-archives/<build id>/, which gives them a permanent URL
+            let buildId = null;
+            try {
+              buildId = fs.readFileSync(`work/${version}/build-id.txt`, 'utf8').trim();
+            } catch (e) {
+              console.log('Could not read build-id.txt:', e.message);
+            }
+            const logsBase = 'https://ecosystembuild.parttio.org/logs';
+            const buildDirUrl = buildId ? `${logsBase}/${version}-archives/${buildId}/` : `${logsBase}/${version}/`;
+            function buildLinks(project) {
+              return [
+                `**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                `**Build Log:** [${project}-build.log](${buildDirUrl}${encodeURIComponent(project)}-build.log)`,
+                `**All logs of this build:** [${buildId || version}](${buildDirUrl})`,
+              ].join('\n');
+            }
+
             // Read failed projects to know which ones are still failing
             let failedProjects = [];
             try {
@@ -379,15 +496,16 @@ jobs:
             }
 
             // Find open issues for this version
-            const issues = await github.rest.issues.listForRepo({
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
-              labels: 'build-failure'
+              labels: 'build-failure',
+              per_page: 100
             });
 
             // Close issues for projects that are now passing
-            for (const issue of issues.data) {
+            for (const issue of issues) {
               const match = issue.title.match(/Build failing: (.+) against Vaadin (.+)$/);
               if (!match) continue;
 
@@ -416,9 +534,11 @@ jobs:
               // Flaky 5-pass rule only applies to SNAPSHOTs
               // (non-SNAPSHOTs close immediately since version changes reset the context)
               if (isFlaky && isSnapshot) {
-                // Count consecutive passes from build archives
+                // Count consecutive passes from build archives. The current run is normally already
+                // archived; if not (no build id), count it separately.
                 const archivesDir = `work/${version}-archives`;
-                let consecutivePasses = 0;
+                const currentArchived = buildId && fs.existsSync(`${archivesDir}/${buildId}`);
+                let consecutivePasses = currentArchived ? 0 : 1;
                 try {
                   const archiveDirs = fs.readdirSync(archivesDir)
                     .filter(d => fs.statSync(`${archivesDir}/${d}`).isDirectory())
@@ -443,9 +563,6 @@ jobs:
                   console.log(`Could not read archives for ${version}: ${e.message}`);
                 }
 
-                // Current build also passes, count it
-                consecutivePasses++;
-
                 if (consecutivePasses < 5) {
                   console.log(`Flaky issue #${issue.number} for ${project}: ${consecutivePasses}/5 consecutive passes, keeping open`);
                   continue;
@@ -456,7 +573,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: issue.number,
-                  body: `Flaky build resolved: **${project}** has passed 5 consecutive builds against Vaadin ${version}.\n\n**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n**Build Log:** [${project}-build.log](https://ecosystembuild.parttio.org/logs/${version}/${encodeURIComponent(project)}-build.log)\n**Archives:** [${version}-archives](https://ecosystembuild.parttio.org/logs/${version}-archives/)`
+                  body: `Flaky build resolved: **${project}** has passed 5 consecutive builds against Vaadin ${version}.\n\n${buildLinks(project)}`
                 });
 
                 await github.rest.issues.update({
@@ -485,7 +602,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: issue.number,
-                  body: `${closeMessage}\n\n**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n**Build Log:** [${project}-build.log](https://ecosystembuild.parttio.org/logs/${version}/${encodeURIComponent(project)}-build.log)\n**Archives:** [${version}-archives](https://ecosystembuild.parttio.org/logs/${version}-archives/)`
+                  body: `${closeMessage}\n\n${buildLinks(project)}`
                 });
 
                 await github.rest.issues.update({

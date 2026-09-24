@@ -66,7 +66,8 @@ jbang EcosystemBuild.java
 | `-p`, `--projects` | Comma-separated list of project names to test | all |
 | `-j`, `--buildThreads` | Number of concurrent builds | `1` |
 | `-q`, `--quiet-downloads` | Silence Maven download progress messages | `false` |
-| `-t`, `--timeout` | Build timeout per project in minutes | `2` |
+| `-t`, `--timeout` | Inactivity timeout per project in minutes (build is killed if it prints nothing for this long) | `5` |
+| `--max-build-time` | Hard limit for a single build command in minutes | `30` |
 | `-h`, `--help` | Show help message | |
 | `-V`, `--version` | Print version info | |
 
