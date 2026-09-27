@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:ecosystembuild.parttio.org)",
+      "Bash(gh issue:*)",
+      "Bash(echo python3 not available:*)",
+      "Bash(python3:*)",
+      "Bash(node:*)",
+      "Bash(javac:*)",
+      "Bash(grep:*)",
+      "WebFetch(domain:repo1.maven.org)"
+    ]
+  }
+}

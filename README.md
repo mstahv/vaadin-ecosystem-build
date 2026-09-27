@@ -67,6 +67,7 @@ jbang EcosystemBuild.java
 | `-j`, `--buildThreads` | Number of concurrent builds | `1` |
 | `-q`, `--quiet-downloads` | Silence Maven download progress messages | `false` |
 | `-t`, `--timeout` | Inactivity timeout per project in minutes (build is killed if it prints nothing for this long) | `5` |
+| `--snapshot` | Auto-detect a snapshot series: `current` (latest stable minor, e.g. `25.3-SNAPSHOT`) or `next` (following minor, e.g. `25.4-SNAPSHOT`) | |
 | `--max-build-time` | Hard limit for a single build command in minutes | `30` |
 | `-h`, `--help` | Show help message | |
 | `-V`, `--version` | Print version info | |
@@ -159,7 +160,7 @@ This allows testing projects against unreleased Vaadin versions:
 The repository includes a GitHub Actions workflow with:
 
 ### Scheduled Runs
-- **Every 3 hours**: Tests against Vaadin `25.2-SNAPSHOT` and `25.1-SNAPSHOT` (staggered) to catch regressions early
+- **Every 3 hours**: Tests against the snapshot of the latest stable minor and the snapshot of the next minor (staggered) to catch regressions early. The series are resolved automatically: when e.g. 25.3.0 is released, builds move from `25.2-SNAPSHOT` + `25.3-SNAPSHOT` to `25.3-SNAPSHOT` + `25.4-SNAPSHOT`
 - **Daily**: Tests against `24.9-SNAPSHOT` (5:00 UTC) and the latest stable release from Maven Central (6:00 UTC)
 - Runs on self-hosted runner with work directory preserved between runs
 - Creates a GitHub issue with `build-failure` label if the build fails

@@ -2,9 +2,11 @@ name: Ecosystem Build
 
 on:
   schedule:
-    # Run every 3 hours against 25.3-SNAPSHOT (at 0, 3, 9, 12, 15, 18, 21 - skipping 6 for stable)
+    # Snapshot series are resolved automatically from the latest stable release: e.g. once 25.3.0
+    # is out, "current" is 25.3-SNAPSHOT and "next" is 25.4-SNAPSHOT (25.2-SNAPSHOT is dropped).
+    # Run every 3 hours against the next minor's snapshot (at 0, 3, 9, 12, 15, 18, 21 - skipping 6 for stable)
     - cron: '0 0,3,9,12,15,18,21 * * *'
-    # Run every 3 hours against 25.2-SNAPSHOT (at 1, 4, 7, 10, 13, 16, 19, 22)
+    # Run every 3 hours against the latest stable minor's snapshot (at 1, 4, 7, 10, 13, 16, 19, 22)
     - cron: '0 1,4,7,10,13,16,19,22 * * *'
     # Run daily at 5:00 UTC against 24.9-SNAPSHOT
     - cron: '0 5 * * *'
@@ -24,8 +26,6 @@ on:
 permissions: {}
 
 env:
-  SNAPSHOT_25_3: '25.3-SNAPSHOT'
-  SNAPSHOT_25_2: '25.2-SNAPSHOT'
   SNAPSHOT_24_9: '24.9-SNAPSHOT'
 
 jobs:
@@ -66,12 +66,12 @@ jobs:
           # Determine version based on trigger
           if [ "${{ github.event_name }}" = "schedule" ]; then
             if [ "${{ github.event.schedule }}" = "0 0,3,9,12,15,18,21 * * *" ]; then
-              # 25.3-SNAPSHOT schedule (every 3 hours)
-              VERSION="$SNAPSHOT_25_3"
+              # Next minor snapshot (every 3 hours), e.g. 25.4-SNAPSHOT when 25.3.0 is the latest stable
+              SNAPSHOT_SERIES=next
               echo "build_type=snapshot" >> $GITHUB_OUTPUT
             elif [ "${{ github.event.schedule }}" = "0 1,4,7,10,13,16,19,22 * * *" ]; then
-              # 25.2-SNAPSHOT schedule (every 3 hours, offset)
-              VERSION="$SNAPSHOT_25_2"
+              # Latest stable minor snapshot (every 3 hours, offset), e.g. 25.3-SNAPSHOT
+              SNAPSHOT_SERIES=current
               echo "build_type=snapshot" >> $GITHUB_OUTPUT
             elif [ "${{ github.event.schedule }}" = "0 5 * * *" ]; then
               # 24.9-SNAPSHOT schedule (daily at 5:00 UTC)
@@ -99,7 +99,10 @@ jobs:
 
           echo "vaadin_version=$VERSION" >> $GITHUB_OUTPUT
 
-          if [ "$PRE_RELEASE" = "true" ]; then
+          if [ -n "$SNAPSHOT_SERIES" ]; then
+            jbang EcosystemBuild.java -q -t 5 -j 2 --snapshot "$SNAPSHOT_SERIES" 2>&1 | tee test-output.txt
+            EXIT_CODE=${PIPESTATUS[0]}
+          elif [ "$PRE_RELEASE" = "true" ]; then
             jbang EcosystemBuild.java -q -t 5 -j 2 --pre-release 2>&1 | tee test-output.txt
             EXIT_CODE=${PIPESTATUS[0]}
           elif [ -n "$VERSION" ]; then

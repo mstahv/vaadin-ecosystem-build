@@ -279,6 +279,9 @@ public class EcosystemBuild implements Callable<Integer> {
     @Option(names = {"--pre-release"}, description = "Auto-detect and test the latest pre-release version from Maven Central")
     private boolean preRelease;
 
+    @Option(names = {"--snapshot"}, description = "Auto-detect a snapshot series: 'current' = latest stable minor (e.g. 25.3-SNAPSHOT when 25.3.0 is out), 'next' = the following minor (e.g. 25.4-SNAPSHOT)")
+    private String snapshotSeries;
+
     @Option(names = {"--ci"}, description = "CI-friendly output: no terminal control, log-style progress")
     private boolean ciMode;
 
@@ -374,6 +377,26 @@ public class EcosystemBuild implements Callable<Integer> {
         // Resolve Vaadin version if not specified
         if (vaadinVersion != null && !vaadinVersion.isBlank()) {
             // Explicit version specified - use pre-release settings for snapshots/betas
+            useCustomSettings = true;
+            System.out.println("📦 Using custom Vaadin version: " + vaadinVersion);
+            System.out.println("🔓 Pre-release/snapshot repositories enabled via settings.xml");
+            System.out.println();
+        } else if (snapshotSeries != null) {
+            System.out.println("🔍 Resolving '" + snapshotSeries + "' snapshot series...");
+            String snapshotVersion = switch (snapshotSeries) {
+                case "current" -> {
+                    int[] mm = extractMajorMinor(fetchLatestVaadinVersion());
+                    yield mm[0] + "." + mm[1] + "-SNAPSHOT";
+                }
+                case "next" -> fetchNextSnapshotVersion();
+                default -> throw new CommandLine.ParameterException(new CommandLine(this),
+                        "--snapshot must be 'current' or 'next', was: " + snapshotSeries);
+            };
+            if (snapshotVersion == null) {
+                System.out.println("ℹ️  No snapshot series newer than the latest stable found. Nothing to test.");
+                return 0;
+            }
+            vaadinVersion = snapshotVersion;
             useCustomSettings = true;
             System.out.println("📦 Using custom Vaadin version: " + vaadinVersion);
             System.out.println("🔓 Pre-release/snapshot repositories enabled via settings.xml");
@@ -1691,6 +1714,38 @@ public class EcosystemBuild implements Callable<Integer> {
         }
         System.err.println("📦 Using fallback version: " + FALLBACK_VERSION);
         return FALLBACK_VERSION;
+    }
+
+    /**
+     * Find the first snapshot series after the latest stable minor, e.g. 25.4-SNAPSHOT when
+     * 25.3.0 is released, or 26.0-SNAPSHOT if the next series is a new major.
+     * Returns null if the pre-release repository has no such snapshot.
+     */
+    private String fetchNextSnapshotVersion() {
+        try {
+            HttpClient client = HttpClient.newBuilder()
+                    .followRedirects(HttpClient.Redirect.NORMAL)
+                    .build();
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create("https://maven.vaadin.com/vaadin-prereleases/com/vaadin/vaadin-bom/maven-metadata.xml"))
+                    .timeout(java.time.Duration.ofSeconds(10))
+                    .build();
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) return null;
+
+            int[] stable = extractMajorMinor(fetchLatestVaadinVersion());
+            Comparator<int[]> byMajorMinor = Comparator.<int[]>comparingInt(mm -> mm[0]).thenComparingInt(mm -> mm[1]);
+            return parseVersionsList(response.body()).stream()
+                    .filter(v -> v.matches("^\\d+\\.\\d+-SNAPSHOT$"))
+                    .map(this::extractMajorMinor)
+                    .filter(mm -> byMajorMinor.compare(mm, stable) > 0)
+                    .min(byMajorMinor)
+                    .map(mm -> mm[0] + "." + mm[1] + "-SNAPSHOT")
+                    .orElse(null);
+        } catch (Exception e) {
+            System.err.println("⚠️  Warning: Could not fetch snapshot versions: " + e.getMessage());
+            return null;
+        }
     }
 
     /**
